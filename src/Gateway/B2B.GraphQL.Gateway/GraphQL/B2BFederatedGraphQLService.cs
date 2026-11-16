@@ -6,6 +6,7 @@ using Catalog.Service;
 using Delivery.Service;
 using Invoicing.Service;
 using Ordering.Service;
+using Ordering.Service.GraphQL;
 
 public sealed record GraphQLRequest(
     string Query,
@@ -24,6 +25,8 @@ public sealed record GraphQLResponse(
 public sealed record FederatedOrderNode(
     Guid Id,
     string OrderNumber,
+    Guid CustomerId,
+    CustomerDto Customer,
     string BuyerCompanyName,
     string BuyerVatNumber,
     int PaymentTermsDays,
@@ -160,7 +163,9 @@ public sealed class B2BFederatedGraphQLService(ISender sender)
 
         if (ContainsRootField(queryText, "orders"))
         {
-            var orders = await sender.SendQueryAsync<GetPurchaseOrdersQuery, IReadOnlyList<PurchaseOrderDto>>(new GetPurchaseOrdersQuery(), ct);
+            var buyerVat = TryGetStringVar(vars, "buyerVatNumber");
+            var orders = await sender.SendQueryAsync<GetPurchaseOrdersQuery, IReadOnlyList<PurchaseOrderDto>>(
+                new GetPurchaseOrdersQuery(buyerVat), ct);
             var federated = new List<FederatedOrderNode>(orders.Count);
 
             foreach (var order in orders)
@@ -225,7 +230,7 @@ public sealed class B2BFederatedGraphQLService(ISender sender)
             data["createCatalogProduct"] = await sender.SendCommandAsync<CreateCatalogProductCommand, CatalogProductDto>(cmd, ct);
         }
 
-        if (ContainsRootField(mutationText, "createPurchaseOrder"))
+        if (ContainsRootField(mutationText, "createPurchaseOrder") || ContainsRootField(mutationText, "createOrder"))
         {
             var items = ParseOrderLineRequests(vars);
             var cmd = new CreatePurchaseOrderCommand(
@@ -234,10 +239,20 @@ public sealed class B2BFederatedGraphQLService(ISender sender)
                 PaymentTermsDays: TryGetIntVar(vars, "paymentTermsDays", 30),
                 ShippingDestination: TryGetStringVar(vars, "shippingDestination") ?? "Lyon Hub Logistique, France",
                 Items: items,
-                AutoConfirm: true);
+                AutoConfirm: true,
+                ContactEmail: TryGetStringVar(vars, "contactEmail"));
 
             var createdOrder = await sender.SendCommandAsync<CreatePurchaseOrderCommand, PurchaseOrderDto>(cmd, ct);
-            data["createPurchaseOrder"] = await StitchOrderNodeAsync(createdOrder, ct);
+            var stitched = await StitchOrderNodeAsync(createdOrder, ct);
+
+            if (ContainsRootField(mutationText, "createOrder"))
+            {
+                data["createOrder"] = stitched;
+            }
+            if (ContainsRootField(mutationText, "createPurchaseOrder"))
+            {
+                data["createPurchaseOrder"] = stitched;
+            }
         }
 
         if (ContainsRootField(mutationText, "markInvoicePaid"))
@@ -278,6 +293,8 @@ public sealed class B2BFederatedGraphQLService(ISender sender)
         return new FederatedOrderNode(
             order.Id,
             order.OrderNumber,
+            order.CustomerId,
+            order.Customer,
             order.BuyerCompanyName,
             order.BuyerVatNumber,
             order.PaymentTermsDays,

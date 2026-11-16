@@ -7,6 +7,7 @@ using Delivery.Service;
 using Invoicing.Service;
 using Microsoft.AspNetCore.Mvc;
 using Ordering.Service;
+using Ordering.Service.GraphQL;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -122,6 +123,14 @@ app.MapPost("/api/ordering/orders", async ([FromBody] CreatePurchaseOrderCommand
     return Results.Created($"/api/ordering/orders/{created.Id}", created);
 })
 .WithName("CreatePurchaseOrder")
+.WithOpenApi();
+
+app.MapPost("/api/ordering/graphql", async ([FromBody] OrderingGraphQLRequest request, OrderingGraphQLResolver resolver, CancellationToken ct) =>
+{
+    var response = await resolver.ExecuteAsync(request, ct);
+    return Results.Ok(response);
+})
+.WithName("ExecuteOrderingSubgraphGraphQL")
 .WithOpenApi();
 
 // ==========================================

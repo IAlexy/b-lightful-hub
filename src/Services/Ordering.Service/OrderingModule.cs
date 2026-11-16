@@ -5,6 +5,7 @@ using B2B.BuildingBlocks.Cqrs;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Ordering.Service.GraphQL;
 using Ordering.Service.Mapping;
 using Ordering.Service.Persistence;
 
@@ -46,10 +47,11 @@ public static class OrderingServiceRegistration
             db.Database.EnsureCreated();
         }
 
-        // Register CQRS Command & Query Handlers
+        // Register CQRS Command & Query Handlers + Ordering GraphQL Subgraph Resolver
         services.AddTransient<ICommandHandler<CreatePurchaseOrderCommand, PurchaseOrderDto>, CreatePurchaseOrderCommandHandler>();
         services.AddTransient<IQueryHandler<GetPurchaseOrdersQuery, IReadOnlyList<PurchaseOrderDto>>, GetPurchaseOrdersQueryHandler>();
         services.AddTransient<IQueryHandler<GetPurchaseOrderByIdQuery, PurchaseOrderDto?>, GetPurchaseOrderByIdQueryHandler>();
+        services.AddTransient<OrderingGraphQLResolver>();
 
         return services;
     }
