@@ -98,12 +98,22 @@ app.MapPost("/api/catalog/products", async ([FromBody] CreateCatalogProductComma
 // 3. ORDERING MICROSERVICE REST ENDPOINTS
 // ==========================================
 
-app.MapGet("/api/ordering/orders", async (ISender sender, CancellationToken ct) =>
+app.MapGet("/api/ordering/orders", async ([FromQuery] string? buyerVatNumber, ISender sender, CancellationToken ct) =>
 {
-    var orders = await sender.SendQueryAsync<GetPurchaseOrdersQuery, IReadOnlyList<PurchaseOrderDto>>(new GetPurchaseOrdersQuery(), ct);
+    var orders = await sender.SendQueryAsync<GetPurchaseOrdersQuery, IReadOnlyList<PurchaseOrderDto>>(
+        new GetPurchaseOrdersQuery(buyerVatNumber), ct);
     return Results.Ok(orders);
 })
 .WithName("GetPurchaseOrders")
+.WithOpenApi();
+
+app.MapGet("/api/ordering/orders/{id:guid}", async (Guid id, ISender sender, CancellationToken ct) =>
+{
+    var order = await sender.SendQueryAsync<GetPurchaseOrderByIdQuery, PurchaseOrderDto?>(
+        new GetPurchaseOrderByIdQuery(id), ct);
+    return order is null ? Results.NotFound() : Results.Ok(order);
+})
+.WithName("GetPurchaseOrderById")
 .WithOpenApi();
 
 app.MapPost("/api/ordering/orders", async ([FromBody] CreatePurchaseOrderCommand command, ISender sender, CancellationToken ct) =>
