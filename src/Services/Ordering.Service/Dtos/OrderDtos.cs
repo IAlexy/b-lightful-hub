@@ -29,7 +29,11 @@ public sealed record PurchaseOrderDto(
     DateTime CreatedAtUtc,
     decimal TotalAmountHt,
     int TotalUnits,
-    IReadOnlyList<PurchaseOrderLineDto> Lines);
+    IReadOnlyList<PurchaseOrderLineDto> Lines,
+    string PaymentStatus = "Unpaid",
+    decimal PaidAmountHt = 0m,
+    string? CancellationReason = null,
+    DateTime? CancelledAtUtc = null);
 
 public sealed record OrderSummaryDto(
     Guid Id,
@@ -40,4 +44,20 @@ public sealed record OrderSummaryDto(
     DateTime CreatedAtUtc,
     decimal TotalAmountHt,
     int TotalUnits,
-    int LineCount);
+    int LineCount,
+    string PaymentStatus = "Unpaid",
+    decimal PaidAmountHt = 0m);
+
+public sealed record OrderCancellationResultDto(
+    Guid OrderId,
+    string OrderNumber,
+    string Status,
+    string PaymentStatus,
+    decimal PaidAmountHt,
+    decimal RemainingTotalAmountHt,
+    int RemainingUnits,
+    int RemainingLineCount,
+    Guid? CancelledOrderLineId,
+    string? CancellationReason,
+    DateTime? CancelledAtUtc,
+    PurchaseOrderDto Order);

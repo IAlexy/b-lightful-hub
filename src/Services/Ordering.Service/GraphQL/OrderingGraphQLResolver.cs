@@ -67,6 +67,21 @@ public sealed class OrderingGraphQLResolver(ISender sender)
           orderById(id: ID!): Order
         }
 
+        type OrderCancellationResult {
+          orderId: ID!
+          orderNumber: String!
+          status: String!
+          paymentStatus: String!
+          paidAmountHt: Float!
+          remainingTotalAmountHt: Float!
+          remainingUnits: Int!
+          remainingLineCount: Int!
+          cancelledOrderLineId: ID
+          cancellationReason: String
+          cancelledAtUtc: String
+          order: Order!
+        }
+
         type Mutation {
           createOrder(
             buyerCompanyName: String!
@@ -77,6 +92,9 @@ public sealed class OrderingGraphQLResolver(ISender sender)
             autoConfirm: Boolean = true
             items: [OrderLineInput!]!
           ): Order!
+          cancelOrder(orderId: ID!, reason: String): OrderCancellationResult!
+          cancelOrderLine(orderId: ID!, lineId: ID!, reason: String): OrderCancellationResult!
+          recordOrderPayment(orderId: ID!, amountPaidHt: Float!): Order!
         }
         """;
 
@@ -192,6 +210,46 @@ public sealed class OrderingGraphQLResolver(ISender sender)
             data["createPurchaseOrder"] = await ResolveCreateOrderMutationAsync(vars, ct);
         }
 
+        if (ContainsField(mutationText, "cancelOrder"))
+        {
+            var orderIdStr = TryGetString(vars, "orderId") ?? TryGetString(vars, "id");
+            if (!Guid.TryParse(orderIdStr, out var orderId))
+            {
+                throw new ArgumentException("Valid orderId variable is required for cancelOrder.");
+            }
+
+            var reason = TryGetString(vars, "reason");
+            data["cancelOrder"] = await sender.SendCommandAsync<CancelPurchaseOrderCommand, OrderCancellationResultDto>(
+                new CancelPurchaseOrderCommand(orderId, reason), ct);
+        }
+
+        if (ContainsField(mutationText, "cancelOrderLine"))
+        {
+            var orderIdStr = TryGetString(vars, "orderId");
+            var lineIdStr = TryGetString(vars, "lineId") ?? TryGetString(vars, "orderLineId");
+            if (!Guid.TryParse(orderIdStr, out var orderId) || !Guid.TryParse(lineIdStr, out var lineId))
+            {
+                throw new ArgumentException("Valid orderId and lineId variables are required for cancelOrderLine.");
+            }
+
+            var reason = TryGetString(vars, "reason");
+            data["cancelOrderLine"] = await sender.SendCommandAsync<CancelOrderLineCommand, OrderCancellationResultDto>(
+                new CancelOrderLineCommand(orderId, lineId, reason), ct);
+        }
+
+        if (ContainsField(mutationText, "recordOrderPayment"))
+        {
+            var orderIdStr = TryGetString(vars, "orderId");
+            if (!Guid.TryParse(orderIdStr, out var orderId))
+            {
+                throw new ArgumentException("Valid orderId variable is required for recordOrderPayment.");
+            }
+
+            var amount = TryGetDecimal(vars, "amountPaidHt", 0m);
+            data["recordOrderPayment"] = await sender.SendCommandAsync<RecordOrderPaymentCommand, PurchaseOrderDto>(
+                new RecordOrderPaymentCommand(orderId, amount), ct);
+        }
+
         if (data.Count == 0)
         {
             return new OrderingGraphQLResponse(null, [new OrderingGraphQLError("Unknown Ordering GraphQL mutation field.")]);
@@ -212,6 +270,9 @@ public sealed class OrderingGraphQLResolver(ISender sender)
 
     private static int TryGetInt(Dictionary<string, JsonElement> vars, string key, int fallback) =>
         vars.TryGetValue(key, out var el) && el.TryGetInt32(out var val) ? val : fallback;
+
+    private static decimal TryGetDecimal(Dictionary<string, JsonElement> vars, string key, decimal fallback) =>
+        vars.TryGetValue(key, out var el) && el.TryGetDecimal(out var val) ? val : fallback;
 
     private static bool TryGetBool(Dictionary<string, JsonElement> vars, string key, bool fallback) =>
         vars.TryGetValue(key, out var el) && (el.ValueKind == JsonValueKind.True || el.ValueKind == JsonValueKind.False)

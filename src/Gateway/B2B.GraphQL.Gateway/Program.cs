@@ -7,6 +7,7 @@ using Delivery.Service;
 using Invoicing.Service;
 using Microsoft.AspNetCore.Mvc;
 using Ordering.Service;
+using Ordering.Service.DataModels;
 using Ordering.Service.GraphQL;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -123,6 +124,46 @@ app.MapPost("/api/ordering/orders", async ([FromBody] CreatePurchaseOrderCommand
     return Results.Created($"/api/ordering/orders/{created.Id}", created);
 })
 .WithName("CreatePurchaseOrder")
+.WithOpenApi();
+
+app.MapDelete("/api/ordering/orders/{orderId:guid}", async (Guid orderId, [FromQuery] string? reason, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var result = await sender.SendCommandAsync<CancelPurchaseOrderCommand, OrderCancellationResultDto>(
+            new CancelPurchaseOrderCommand(orderId, reason), ct);
+        return Results.Ok(result);
+    }
+    catch (OrderCancellationException ex) when (ex.ErrorCode == "ORDER_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (OrderCancellationException ex)
+    {
+        return Results.Conflict(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("CancelPurchaseOrder")
+.WithOpenApi();
+
+app.MapDelete("/api/ordering/orders/{orderId:guid}/lines/{lineId:guid}", async (Guid orderId, Guid lineId, [FromQuery] string? reason, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var result = await sender.SendCommandAsync<CancelOrderLineCommand, OrderCancellationResultDto>(
+            new CancelOrderLineCommand(orderId, lineId, reason), ct);
+        return Results.Ok(result);
+    }
+    catch (OrderCancellationException ex) when (ex.ErrorCode is "ORDER_NOT_FOUND" or "ORDER_LINE_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (OrderCancellationException ex)
+    {
+        return Results.Conflict(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("CancelOrderLine")
 .WithOpenApi();
 
 app.MapPost("/api/ordering/graphql", async ([FromBody] OrderingGraphQLRequest request, OrderingGraphQLResolver resolver, CancellationToken ct) =>

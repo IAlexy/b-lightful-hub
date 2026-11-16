@@ -27,7 +27,16 @@ public sealed class OrderingAutoMapperProfile : Profile
             .ForMember(d => d.PaymentTermsDays, opt => opt.MapFrom(s => s.PaymentTermsDays <= 0 ? 30 : s.PaymentTermsDays))
             .ForMember(d => d.ShippingDestination, opt => opt.MapFrom(s => s.ShippingDestination))
             .ForMember(d => d.Status, opt => opt.MapFrom(s => s.AutoConfirm ? PurchaseOrderStatus.Confirmed : PurchaseOrderStatus.Draft))
+            .ForMember(d => d.PaymentStatus, opt => opt.MapFrom(_ => OrderPaymentStatus.Unpaid))
+            .ForMember(d => d.PaidAmountHt, opt => opt.MapFrom(_ => 0m))
             .ForMember(d => d.Lines, opt => opt.MapFrom(s => s.Items));
+
+        // Cancellation Commands -> Cancellation DataModels
+        CreateMap<CancelPurchaseOrderCommand, CancelOrderDataModel>()
+            .ForMember(d => d.Reason, opt => opt.MapFrom(s => string.IsNullOrWhiteSpace(s.Reason) ? "Cancelled by B2B customer request" : s.Reason.Trim()));
+
+        CreateMap<CancelOrderLineCommand, CancelOrderLineDataModel>()
+            .ForMember(d => d.Reason, opt => opt.MapFrom(s => string.IsNullOrWhiteSpace(s.Reason) ? "Order line removed by B2B customer" : s.Reason.Trim()));
 
         // 2. Domain DataModels <-> EF Core SQL Database Entities
         CreateMap<CustomerDataModel, CustomerEntity>();
@@ -39,12 +48,21 @@ public sealed class OrderingAutoMapperProfile : Profile
 
         CreateMap<OrderDataModel, OrderEntity>()
             .ForMember(d => d.Status, opt => opt.MapFrom(s => s.Status.ToString()))
+            .ForMember(d => d.PaymentStatus, opt => opt.MapFrom(s => s.PaymentStatus.ToString()))
+            .ForMember(d => d.PaidAmountHt, opt => opt.MapFrom(s => s.PaidAmountHt))
             .ForMember(d => d.TotalAmountHt, opt => opt.MapFrom(s => s.TotalAmountHt))
+            .ForMember(d => d.CancellationReason, opt => opt.MapFrom(s => s.CancellationReason))
+            .ForMember(d => d.CancelledAtUtc, opt => opt.MapFrom(s => s.CancelledAtUtc))
             .ForMember(d => d.Lines, opt => opt.MapFrom(s => s.Lines));
 
         CreateMap<OrderEntity, OrderDataModel>()
             .ForMember(d => d.Status, opt => opt.MapFrom(s =>
                 Enum.TryParse<PurchaseOrderStatus>(s.Status, true, out var st) ? st : PurchaseOrderStatus.Confirmed))
+            .ForMember(d => d.PaymentStatus, opt => opt.MapFrom(s =>
+                Enum.TryParse<OrderPaymentStatus>(s.PaymentStatus, true, out var pst) ? pst : OrderPaymentStatus.Unpaid))
+            .ForMember(d => d.PaidAmountHt, opt => opt.MapFrom(s => s.PaidAmountHt))
+            .ForMember(d => d.CancellationReason, opt => opt.MapFrom(s => s.CancellationReason))
+            .ForMember(d => d.CancelledAtUtc, opt => opt.MapFrom(s => s.CancelledAtUtc))
             .ForMember(d => d.Customer, opt => opt.MapFrom(s => s.Customer))
             .ForMember(d => d.Lines, opt => opt.MapFrom(s => s.Lines));
 
@@ -57,15 +75,30 @@ public sealed class OrderingAutoMapperProfile : Profile
             .ForMember(d => d.BuyerCompanyName, opt => opt.MapFrom(s => s.Customer.CompanyName))
             .ForMember(d => d.BuyerVatNumber, opt => opt.MapFrom(s => s.Customer.VatNumber))
             .ForMember(d => d.Status, opt => opt.MapFrom(s => s.Status.ToString()))
+            .ForMember(d => d.PaymentStatus, opt => opt.MapFrom(s => s.PaymentStatus.ToString()))
+            .ForMember(d => d.PaidAmountHt, opt => opt.MapFrom(s => s.PaidAmountHt))
             .ForMember(d => d.TotalAmountHt, opt => opt.MapFrom(s => s.TotalAmountHt))
-            .ForMember(d => d.TotalUnits, opt => opt.MapFrom(s => s.TotalUnits));
+            .ForMember(d => d.TotalUnits, opt => opt.MapFrom(s => s.TotalUnits))
+            .ForMember(d => d.CancellationReason, opt => opt.MapFrom(s => s.CancellationReason))
+            .ForMember(d => d.CancelledAtUtc, opt => opt.MapFrom(s => s.CancelledAtUtc));
 
         CreateMap<OrderDataModel, OrderSummaryDto>()
             .ForMember(d => d.BuyerCompanyName, opt => opt.MapFrom(s => s.Customer.CompanyName))
             .ForMember(d => d.BuyerVatNumber, opt => opt.MapFrom(s => s.Customer.VatNumber))
             .ForMember(d => d.Status, opt => opt.MapFrom(s => s.Status.ToString()))
+            .ForMember(d => d.PaymentStatus, opt => opt.MapFrom(s => s.PaymentStatus.ToString()))
+            .ForMember(d => d.PaidAmountHt, opt => opt.MapFrom(s => s.PaidAmountHt))
             .ForMember(d => d.TotalAmountHt, opt => opt.MapFrom(s => s.TotalAmountHt))
             .ForMember(d => d.TotalUnits, opt => opt.MapFrom(s => s.TotalUnits))
             .ForMember(d => d.LineCount, opt => opt.MapFrom(s => s.Lines.Count));
+
+        CreateMap<OrderDataModel, OrderCancellationResultDto>()
+            .ForMember(d => d.OrderId, opt => opt.MapFrom(s => s.Id))
+            .ForMember(d => d.Status, opt => opt.MapFrom(s => s.Status.ToString()))
+            .ForMember(d => d.PaymentStatus, opt => opt.MapFrom(s => s.PaymentStatus.ToString()))
+            .ForMember(d => d.RemainingTotalAmountHt, opt => opt.MapFrom(s => s.TotalAmountHt))
+            .ForMember(d => d.RemainingUnits, opt => opt.MapFrom(s => s.TotalUnits))
+            .ForMember(d => d.RemainingLineCount, opt => opt.MapFrom(s => s.Status == PurchaseOrderStatus.Cancelled ? 0 : s.Lines.Count))
+            .ForMember(d => d.Order, opt => opt.MapFrom(s => s));
     }
 }

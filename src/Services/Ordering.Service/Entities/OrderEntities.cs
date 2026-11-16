@@ -33,7 +33,11 @@ public class OrderEntity
     public int PaymentTermsDays { get; set; } = 30;
     public string ShippingDestination { get; set; } = string.Empty;
     public string Status { get; set; } = "Confirmed";
+    public string PaymentStatus { get; set; } = "Unpaid";
+    public decimal PaidAmountHt { get; set; }
     public decimal TotalAmountHt { get; set; }
+    public string? CancellationReason { get; set; }
+    public DateTime? CancelledAtUtc { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 
     // Navigation property: 1 Order has many OrderLines
