@@ -3,6 +3,7 @@ namespace B2B.Tests;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using AutoMapper;
 using B2B.BuildingBlocks.Cqrs;
 using B2B.BuildingBlocks.Mapping;
 using B2B.BuildingBlocks.Messaging;
@@ -11,8 +12,13 @@ using Catalog.Service;
 using Delivery.Service;
 using Invoicing.Service;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Ordering.Service;
+using Ordering.Service.DataModels;
+using Ordering.Service.Entities;
+using Ordering.Service.Mapping;
+using Ordering.Service.Persistence;
 
 public sealed record SourceSample(string Code, int Quantity, decimal UnitPrice);
 public sealed record DestRecordSample(string Code, int Quantity, decimal UnitPrice);
@@ -248,5 +254,80 @@ public class B2BMicroservicesTests : IClassFixture<WebApplicationFactory<Program
         var deliveredRes = await client.PatchAsync($"/api/delivery/shipments/{shipId}/advance", null);
         var deliveredDto = await deliveredRes.Content.ReadFromJsonAsync<B2BShipmentDto>();
         Assert.Equal("Delivered", deliveredDto?.Status);
+    }
+
+    [Fact]
+    public async Task EfCore_OrderingDbContext_AutoMapper_Command_And_Two_Queries_Should_Persist_Customer_Order_And_Lines()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<ISender, CqrsDispatcher>();
+        services.AddSingleton<IB2BMapper, B2BMapper>();
+        services.AddSingleton<IEventBus, InMemoryEventBus>();
+
+        services.AddCatalogMicroservice();
+        services.AddOrderingMicroservice();
+        services.AddInvoicingMicroservice();
+        services.AddDeliveryMicroservice();
+
+        await using var provider = services.BuildServiceProvider();
+        var sender = provider.GetRequiredService<ISender>();
+        var autoMapper = provider.GetRequiredService<IMapper>();
+        var dbContext = provider.GetRequiredService<OrderingDbContext>();
+
+        // 1. Execute CreatePurchaseOrderCommand (creates CustomerEntity, OrderEntity, and 2 OrderLineEntities in SQLite)
+        var createCmd = new CreatePurchaseOrderCommand(
+            BuyerCompanyName: "Lyon EuroLogistics SAS",
+            BuyerVatNumber: "FR5544332211",
+            PaymentTermsDays: 60,
+            ShippingDestination: "Port Edouard Herriot, 69007 Lyon",
+            Items:
+            [
+                new OrderLineRequest("SRV-RACK-42U", 5),
+                new OrderLineRequest("UPS-LFP-10KVA", 6)
+            ],
+            AutoConfirm: true,
+            ContactEmail: "achats@eurologistics.fr");
+
+        var createdOrderDto = await sender.SendCommandAsync<CreatePurchaseOrderCommand, PurchaseOrderDto>(createCmd);
+
+        Assert.NotEqual(Guid.Empty, createdOrderDto.Id);
+        Assert.NotNull(createdOrderDto.Customer);
+        Assert.Equal("Lyon EuroLogistics SAS", createdOrderDto.Customer.CompanyName);
+        Assert.Equal("FR5544332211", createdOrderDto.Customer.VatNumber);
+        Assert.Equal("achats@eurologistics.fr", createdOrderDto.Customer.ContactEmail);
+        Assert.Equal(2, createdOrderDto.Lines.Count);
+        Assert.Equal(11, createdOrderDto.TotalUnits);
+        // Bulk prices: 5 * 2040 + 6 * 1650 = 10200 + 9900 = 20100 EUR HT
+        Assert.Equal(20100m, createdOrderDto.TotalAmountHt);
+
+        // 2. Verify SQL tables directly in EF Core OrderingDbContext (Customer - Order - OrderLines)
+        var sqlCustomer = await dbContext.Customers
+            .Include(c => c.Orders)
+            .ThenInclude(o => o.Lines)
+            .FirstOrDefaultAsync(c => c.VatNumber == "FR5544332211");
+
+        Assert.NotNull(sqlCustomer);
+        Assert.Single(sqlCustomer.Orders);
+        Assert.Equal(2, sqlCustomer.Orders.First().Lines.Count);
+
+        // 3. Query 1: GetPurchaseOrdersQuery (Orders List)
+        var ordersList = await sender.SendQueryAsync<GetPurchaseOrdersQuery, IReadOnlyList<PurchaseOrderDto>>(
+            new GetPurchaseOrdersQuery(BuyerVatNumber: "FR5544332211"));
+        Assert.Single(ordersList);
+        Assert.Equal(createdOrderDto.Id, ordersList[0].Id);
+
+        // 4. Query 2: GetPurchaseOrderByIdQuery (Specific Order by Id)
+        var orderById = await sender.SendQueryAsync<GetPurchaseOrderByIdQuery, PurchaseOrderDto?>(
+            new GetPurchaseOrderByIdQuery(createdOrderDto.Id));
+        Assert.NotNull(orderById);
+        Assert.Equal(createdOrderDto.OrderNumber, orderById.OrderNumber);
+        Assert.Equal("Lyon EuroLogistics SAS", orderById.Customer.CompanyName);
+        Assert.Equal(2, orderById.Lines.Count);
+
+        // Verify AutoMapper OrderSummaryDto mapping as well
+        var orderDataModel = autoMapper.Map<OrderEntity, OrderDataModel>(sqlCustomer.Orders.First());
+        var summaryDto = autoMapper.Map<OrderDataModel, OrderSummaryDto>(orderDataModel);
+        Assert.Equal(2, summaryDto.LineCount);
+        Assert.Equal(20100m, summaryDto.TotalAmountHt);
     }
 }
