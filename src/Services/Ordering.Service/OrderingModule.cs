@@ -47,8 +47,12 @@ public static class OrderingServiceRegistration
             db.Database.EnsureCreated();
         }
 
-        // Register CQRS Command & Query Handlers + Ordering GraphQL Subgraph Resolver
+        // Register Order Cancellation Service & CQRS Command/Query Handlers + Ordering GraphQL Subgraph Resolver
+        services.AddTransient<IOrderCancellationService, OrderCancellationService>();
         services.AddTransient<ICommandHandler<CreatePurchaseOrderCommand, PurchaseOrderDto>, CreatePurchaseOrderCommandHandler>();
+        services.AddTransient<ICommandHandler<CancelPurchaseOrderCommand, OrderCancellationResultDto>, CancelPurchaseOrderCommandHandler>();
+        services.AddTransient<ICommandHandler<CancelOrderLineCommand, OrderCancellationResultDto>, CancelOrderLineCommandHandler>();
+        services.AddTransient<ICommandHandler<RecordOrderPaymentCommand, PurchaseOrderDto>, RecordOrderPaymentCommandHandler>();
         services.AddTransient<IQueryHandler<GetPurchaseOrdersQuery, IReadOnlyList<PurchaseOrderDto>>, GetPurchaseOrdersQueryHandler>();
         services.AddTransient<IQueryHandler<GetPurchaseOrderByIdQuery, PurchaseOrderDto?>, GetPurchaseOrderByIdQueryHandler>();
         services.AddTransient<OrderingGraphQLResolver>();

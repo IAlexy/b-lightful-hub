@@ -68,6 +68,8 @@ public sealed class B2BFederatedGraphQLService(ISender sender)
         type Mutation {
           createCatalogProduct(sku: String!, name: String!, category: String!, unitPriceHt: Float!, bulkTierMinQuantity: Int!, bulkUnitPriceHt: Float!, initialStock: Int!, unitWeightKg: Float!): CatalogProduct!
           createPurchaseOrder(buyerCompanyName: String!, buyerVatNumber: String!, paymentTermsDays: Int!, shippingDestination: String!): FederatedOrderNode!
+          cancelOrder(orderId: ID!, reason: String): OrderCancellationResult!
+          cancelOrderLine(orderId: ID!, lineId: ID!, reason: String): OrderCancellationResult!
           markInvoicePaid(invoiceId: ID!): B2BInvoice
           advanceShipmentStatus(shipmentId: ID!): B2BShipment
         }
@@ -253,6 +255,33 @@ public sealed class B2BFederatedGraphQLService(ISender sender)
             {
                 data["createPurchaseOrder"] = stitched;
             }
+        }
+
+        if (ContainsRootField(mutationText, "cancelOrder"))
+        {
+            var orderIdStr = TryGetStringVar(vars, "orderId") ?? TryGetStringVar(vars, "id");
+            if (!Guid.TryParse(orderIdStr, out var orderId))
+            {
+                throw new ArgumentException("Valid orderId variable is required for cancelOrder.");
+            }
+
+            var reason = TryGetStringVar(vars, "reason");
+            data["cancelOrder"] = await sender.SendCommandAsync<CancelPurchaseOrderCommand, OrderCancellationResultDto>(
+                new CancelPurchaseOrderCommand(orderId, reason), ct);
+        }
+
+        if (ContainsRootField(mutationText, "cancelOrderLine"))
+        {
+            var orderIdStr = TryGetStringVar(vars, "orderId");
+            var lineIdStr = TryGetStringVar(vars, "lineId") ?? TryGetStringVar(vars, "orderLineId");
+            if (!Guid.TryParse(orderIdStr, out var orderId) || !Guid.TryParse(lineIdStr, out var lineId))
+            {
+                throw new ArgumentException("Valid orderId and lineId variables are required for cancelOrderLine.");
+            }
+
+            var reason = TryGetStringVar(vars, "reason");
+            data["cancelOrderLine"] = await sender.SendCommandAsync<CancelOrderLineCommand, OrderCancellationResultDto>(
+                new CancelOrderLineCommand(orderId, lineId, reason), ct);
         }
 
         if (ContainsRootField(mutationText, "markInvoicePaid"))

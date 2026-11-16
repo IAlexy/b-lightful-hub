@@ -37,7 +37,10 @@ public class OrderingDbContext(DbContextOptions<OrderingDbContext> options) : Db
             entity.Property(o => o.OrderNumber).IsRequired().HasMaxLength(50);
             entity.Property(o => o.ShippingDestination).IsRequired().HasMaxLength(350);
             entity.Property(o => o.Status).IsRequired().HasMaxLength(40);
+            entity.Property(o => o.PaymentStatus).IsRequired().HasMaxLength(40);
+            entity.Property(o => o.PaidAmountHt).HasColumnType("decimal(18,2)");
             entity.Property(o => o.TotalAmountHt).HasColumnType("decimal(18,2)");
+            entity.Property(o => o.CancellationReason).HasMaxLength(500);
             entity.HasIndex(o => o.OrderNumber).IsUnique().HasDatabaseName("IX_Orders_OrderNumber");
 
             entity.HasOne(o => o.Customer)
