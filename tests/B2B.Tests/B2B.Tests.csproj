@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="8.0.13" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.5.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\BuildingBlocks\B2B.BuildingBlocks\B2B.BuildingBlocks.csproj" />
+    <ProjectReference Include="..\..\src\Services\Catalog.Service\Catalog.Service.csproj" />
+    <ProjectReference Include="..\..\src\Services\Ordering.Service\Ordering.Service.csproj" />
+    <ProjectReference Include="..\..\src\Services\Invoicing.Service\Invoicing.Service.csproj" />
+    <ProjectReference Include="..\..\src\Services\Delivery.Service\Delivery.Service.csproj" />
+    <ProjectReference Include="..\..\src\Gateway\B2B.GraphQL.Gateway\B2B.GraphQL.Gateway.csproj" />
+  </ItemGroup>
+</Project>
