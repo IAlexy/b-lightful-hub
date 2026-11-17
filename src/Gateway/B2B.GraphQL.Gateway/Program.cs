@@ -3,6 +3,9 @@ using B2B.BuildingBlocks.Mapping;
 using B2B.BuildingBlocks.Messaging;
 using B2B.GraphQL.Gateway.GraphQL;
 using Catalog.Service;
+using Customer.Service;
+using Customer.Service.DataModels;
+using Customer.Service.GraphQL;
 using Delivery.Service;
 using Invoicing.Service;
 using Microsoft.AspNetCore.Mvc;
@@ -17,8 +20,9 @@ builder.Services.AddSingleton<ISender, CqrsDispatcher>();
 builder.Services.AddSingleton<IB2BMapper, B2BMapper>();
 builder.Services.AddSingleton<IEventBus, InMemoryEventBus>();
 
-// 2. Register the 4 B2B Microservice Bounded Contexts
+// 2. Register the 5 B2B Microservice Bounded Contexts
 builder.Services.AddCatalogMicroservice();
+builder.Services.AddCustomerMicroservice();
 builder.Services.AddOrderingMicroservice();
 builder.Services.AddInvoicingMicroservice();
 builder.Services.AddDeliveryMicroservice();
@@ -37,10 +41,28 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-// Seed an initial confirmed B2B Order so the Federated GraphQL & REST endpoints have live stitched data on startup
+// Seed an initial B2B Customer & confirmed Order so the Federated GraphQL & REST endpoints have live stitched data on startup
 using (var scope = app.Services.CreateScope())
 {
     var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+    var existingCustomers = await sender.SendQueryAsync<GetB2BCustomersQuery, IReadOnlyList<B2BCustomerDto>>(new GetB2BCustomersQuery());
+    if (existingCustomers.Count == 0)
+    {
+        await sender.SendCommandAsync<CreateB2BCustomerCommand, B2BCustomerDto>(
+            new CreateB2BCustomerCommand(
+                Name: "Alpine Cloud Datacenters SAS",
+                SirenSiret: "42889123456001",
+                InvoicingAddress: "Parc Technologique de Grenoble, 38000 France",
+                DeliveryAddress: null,
+                UseInvoicingAddressForDelivery: true,
+                Tags:
+                [
+                    new CustomTagInput("VIP", "Strategic Account", "#7C3AED"),
+                    new CustomTagInput("Datacenter", "Tier-IV", "#10B981")
+                ],
+                ContactEmail: "procurement@alpine-cloud.fr"));
+    }
+
     var existing = await sender.SendQueryAsync<GetPurchaseOrdersQuery, IReadOnlyList<PurchaseOrderDto>>(new GetPurchaseOrdersQuery());
     if (existing.Count == 0)
     {
@@ -94,6 +116,164 @@ app.MapPost("/api/catalog/products", async ([FromBody] CreateCatalogProductComma
     return Results.Created($"/api/catalog/products/{created.Sku}", created);
 })
 .WithName("CreateCatalogProduct")
+.WithOpenApi();
+
+// ==========================================
+// 2.5 CUSTOMER MICROSERVICE REST & GRAPHQL ENDPOINTS
+// ==========================================
+
+app.MapGet("/api/customers", async ([FromQuery] string? search, [FromQuery] string? tag, ISender sender, CancellationToken ct) =>
+{
+    var customers = await sender.SendQueryAsync<GetB2BCustomersQuery, IReadOnlyList<B2BCustomerDto>>(
+        new GetB2BCustomersQuery(search, tag), ct);
+    return Results.Ok(customers);
+})
+.WithName("GetB2BCustomers")
+.WithOpenApi();
+
+app.MapGet("/api/customers/{id:guid}", async (Guid id, ISender sender, CancellationToken ct) =>
+{
+    var customer = await sender.SendQueryAsync<GetB2BCustomerByIdQuery, B2BCustomerDto?>(
+        new GetB2BCustomerByIdQuery(id), ct);
+    return customer is null ? Results.NotFound(new { errorCode = "CUSTOMER_NOT_FOUND", message = $"Customer {id} was not found." }) : Results.Ok(customer);
+})
+.WithName("GetB2BCustomerById")
+.WithOpenApi();
+
+app.MapPost("/api/customers", async ([FromBody] CreateB2BCustomerCommand command, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var created = await sender.SendCommandAsync<CreateB2BCustomerCommand, B2BCustomerDto>(command, ct);
+        return Results.Created($"/api/customers/{created.Id}", created);
+    }
+    catch (CustomerDomainException ex) when (ex.ErrorCode == "DUPLICATE_SIREN_SIRET")
+    {
+        return Results.Conflict(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CustomerDomainException ex)
+    {
+        return Results.BadRequest(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("CreateB2BCustomer")
+.WithOpenApi();
+
+app.MapPut("/api/customers/{id:guid}", async (Guid id, [FromBody] UpdateB2BCustomerCommand command, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var normalizedCommand = command with { CustomerId = id };
+        var updated = await sender.SendCommandAsync<UpdateB2BCustomerCommand, B2BCustomerDto>(normalizedCommand, ct);
+        return Results.Ok(updated);
+    }
+    catch (CustomerDomainException ex) when (ex.ErrorCode == "CUSTOMER_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CustomerDomainException ex) when (ex.ErrorCode == "DUPLICATE_SIREN_SIRET")
+    {
+        return Results.Conflict(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CustomerDomainException ex)
+    {
+        return Results.BadRequest(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("UpdateB2BCustomer")
+.WithOpenApi();
+
+app.MapDelete("/api/customers/{id:guid}", async (Guid id, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var deleted = await sender.SendCommandAsync<DeleteB2BCustomerCommand, bool>(new DeleteB2BCustomerCommand(id), ct);
+        return Results.Ok(new { customerId = id, deleted });
+    }
+    catch (CustomerDomainException ex) when (ex.ErrorCode == "CUSTOMER_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("DeleteB2BCustomer")
+.WithOpenApi();
+
+app.MapGet("/api/customers/{id:guid}/orders", async (Guid id, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var orders = await sender.SendQueryAsync<GetCustomerOrdersQuery, IReadOnlyList<PurchaseOrderDto>>(
+            new GetCustomerOrdersQuery(id), ct);
+        return Results.Ok(orders);
+    }
+    catch (CustomerDomainException ex) when (ex.ErrorCode == "CUSTOMER_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("GetCustomerOrders")
+.WithOpenApi();
+
+app.MapGet("/api/customers/{id:guid}/invoices", async (Guid id, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var invoices = await sender.SendQueryAsync<GetCustomerInvoicesQuery, IReadOnlyList<B2BInvoiceDto>>(
+            new GetCustomerInvoicesQuery(id), ct);
+        return Results.Ok(invoices);
+    }
+    catch (CustomerDomainException ex) when (ex.ErrorCode == "CUSTOMER_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("GetCustomerInvoices")
+.WithOpenApi();
+
+app.MapGet("/api/customers/{id:guid}/deliveries", async (Guid id, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var deliveries = await sender.SendQueryAsync<GetCustomerDeliveriesQuery, IReadOnlyList<B2BShipmentDto>>(
+            new GetCustomerDeliveriesQuery(id), ct);
+        return Results.Ok(deliveries);
+    }
+    catch (CustomerDomainException ex) when (ex.ErrorCode == "CUSTOMER_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("GetCustomerDeliveries")
+.WithOpenApi();
+
+app.MapGet("/api/customers/{id:guid}/favorite-products", async (Guid id, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var favorites = await sender.SendQueryAsync<GetCustomerFavoriteProductsQuery, IReadOnlyList<CustomerFavoriteProductDto>>(
+            new GetCustomerFavoriteProductsQuery(id), ct);
+        return Results.Ok(favorites);
+    }
+    catch (CustomerDomainException ex) when (ex.ErrorCode == "CUSTOMER_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CustomerFavoriteProductsNotImplementedException ex)
+    {
+        return Results.Json(
+            new { errorCode = ex.ErrorCode, customerId = ex.CustomerId, message = ex.Message },
+            statusCode: StatusCodes.Status501NotImplemented);
+    }
+})
+.WithName("GetCustomerFavoriteProducts")
+.WithOpenApi();
+
+app.MapPost("/api/customers/graphql", async ([FromBody] CustomerGraphQLRequest request, CustomerGraphQLResolver resolver, CancellationToken ct) =>
+{
+    var response = await resolver.ExecuteAsync(request, ct);
+    return Results.Ok(response);
+})
+.WithName("ExecuteCustomerSubgraphGraphQL")
 .WithOpenApi();
 
 // ==========================================

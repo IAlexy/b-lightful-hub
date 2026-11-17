@@ -363,16 +363,24 @@ public static class AutoMapperServiceCollectionExtensions
 {
     public static IServiceCollection AddAutoMapper(this IServiceCollection services, params Profile[] profiles)
     {
-        var config = new MapperConfiguration(cfg =>
+        foreach (var profile in profiles)
         {
-            foreach (var profile in profiles)
+            services.AddSingleton<Profile>(profile);
+        }
+
+        services.AddSingleton<MapperConfiguration>(sp =>
+        {
+            var registeredProfiles = sp.GetServices<Profile>();
+            return new MapperConfiguration(cfg =>
             {
-                cfg.AddProfile(profile);
-            }
+                foreach (var profile in registeredProfiles)
+                {
+                    cfg.AddProfile(profile);
+                }
+            });
         });
 
-        services.AddSingleton(config);
-        services.AddSingleton<IMapper>(_ => config.CreateMapper());
+        services.AddSingleton<IMapper>(sp => sp.GetRequiredService<MapperConfiguration>().CreateMapper());
         return services;
     }
 }

@@ -3,6 +3,8 @@ namespace B2B.GraphQL.Gateway.GraphQL;
 using System.Text.Json;
 using B2B.BuildingBlocks.Cqrs;
 using Catalog.Service;
+using Customer.Service;
+using Customer.Service.GraphQL;
 using Delivery.Service;
 using Invoicing.Service;
 using Ordering.Service;
@@ -59,6 +61,12 @@ public sealed class B2BFederatedGraphQLService(ISender sender)
           dashboard: B2BDashboardMetrics!
           catalog(category: String): [CatalogProduct!]!
           productBySku(sku: String!): CatalogProduct
+          customers(search: String, tag: String): [B2BCustomer!]!
+          customerById(id: ID!): B2BCustomer
+          customerOrders(customerId: ID!): [PurchaseOrder!]!
+          customerInvoices(customerId: ID!): [B2BInvoice!]!
+          customerDeliveries(customerId: ID!): [B2BShipment!]!
+          customerFavoriteProducts(customerId: ID!): [CustomerFavoriteProduct!]!
           orders: [FederatedOrderNode!]!
           orderById(id: ID!): FederatedOrderNode
           invoices: [B2BInvoice!]!
@@ -67,6 +75,9 @@ public sealed class B2BFederatedGraphQLService(ISender sender)
 
         type Mutation {
           createCatalogProduct(sku: String!, name: String!, category: String!, unitPriceHt: Float!, bulkTierMinQuantity: Int!, bulkUnitPriceHt: Float!, initialStock: Int!, unitWeightKg: Float!): CatalogProduct!
+          createCustomer(name: String!, sirenSiret: String!, invoicingAddress: String!, deliveryAddress: String, useInvoicingAddressForDelivery: Boolean = false, contactEmail: String, tags: [CustomTagInput!]): B2BCustomer!
+          updateCustomer(customerId: ID!, name: String!, sirenSiret: String!, invoicingAddress: String!, deliveryAddress: String, useInvoicingAddressForDelivery: Boolean = false, contactEmail: String, tags: [CustomTagInput!]): B2BCustomer!
+          deleteCustomer(customerId: ID!): Boolean!
           createPurchaseOrder(buyerCompanyName: String!, buyerVatNumber: String!, paymentTermsDays: Int!, shippingDestination: String!): FederatedOrderNode!
           cancelOrder(orderId: ID!, reason: String): OrderCancellationResult!
           cancelOrderLine(orderId: ID!, lineId: ID!, reason: String): OrderCancellationResult!
@@ -163,6 +174,66 @@ public sealed class B2BFederatedGraphQLService(ISender sender)
                 new GetCatalogProductBySkuQuery(sku), ct);
         }
 
+        if (ContainsRootField(queryText, "customers"))
+        {
+            var search = TryGetStringVar(vars, "search");
+            var tag = TryGetStringVar(vars, "tag");
+            data["customers"] = await sender.SendQueryAsync<GetB2BCustomersQuery, IReadOnlyList<B2BCustomerDto>>(
+                new GetB2BCustomersQuery(search, tag), ct);
+        }
+
+        if (ContainsRootField(queryText, "customerById"))
+        {
+            var idStr = TryGetStringVar(vars, "id") ?? TryGetStringVar(vars, "customerId");
+            data["customerById"] = Guid.TryParse(idStr, out var cid)
+                ? await sender.SendQueryAsync<GetB2BCustomerByIdQuery, B2BCustomerDto?>(new GetB2BCustomerByIdQuery(cid), ct)
+                : null;
+        }
+
+        if (ContainsRootField(queryText, "customerOrders"))
+        {
+            var idStr = TryGetStringVar(vars, "customerId") ?? TryGetStringVar(vars, "id");
+            if (!Guid.TryParse(idStr, out var cid))
+            {
+                throw new ArgumentException("Valid customerId variable is required for customerOrders.");
+            }
+            data["customerOrders"] = await sender.SendQueryAsync<GetCustomerOrdersQuery, IReadOnlyList<PurchaseOrderDto>>(
+                new GetCustomerOrdersQuery(cid), ct);
+        }
+
+        if (ContainsRootField(queryText, "customerInvoices"))
+        {
+            var idStr = TryGetStringVar(vars, "customerId") ?? TryGetStringVar(vars, "id");
+            if (!Guid.TryParse(idStr, out var cid))
+            {
+                throw new ArgumentException("Valid customerId variable is required for customerInvoices.");
+            }
+            data["customerInvoices"] = await sender.SendQueryAsync<GetCustomerInvoicesQuery, IReadOnlyList<B2BInvoiceDto>>(
+                new GetCustomerInvoicesQuery(cid), ct);
+        }
+
+        if (ContainsRootField(queryText, "customerDeliveries"))
+        {
+            var idStr = TryGetStringVar(vars, "customerId") ?? TryGetStringVar(vars, "id");
+            if (!Guid.TryParse(idStr, out var cid))
+            {
+                throw new ArgumentException("Valid customerId variable is required for customerDeliveries.");
+            }
+            data["customerDeliveries"] = await sender.SendQueryAsync<GetCustomerDeliveriesQuery, IReadOnlyList<B2BShipmentDto>>(
+                new GetCustomerDeliveriesQuery(cid), ct);
+        }
+
+        if (ContainsRootField(queryText, "customerFavoriteProducts"))
+        {
+            var idStr = TryGetStringVar(vars, "customerId") ?? TryGetStringVar(vars, "id");
+            if (!Guid.TryParse(idStr, out var cid))
+            {
+                throw new ArgumentException("Valid customerId variable is required for customerFavoriteProducts.");
+            }
+            data["customerFavoriteProducts"] = await sender.SendQueryAsync<GetCustomerFavoriteProductsQuery, IReadOnlyList<CustomerFavoriteProductDto>>(
+                new GetCustomerFavoriteProductsQuery(cid), ct);
+        }
+
         if (ContainsRootField(queryText, "orders"))
         {
             var buyerVat = TryGetStringVar(vars, "buyerVatNumber");
@@ -230,6 +301,53 @@ public sealed class B2BFederatedGraphQLService(ISender sender)
                 UnitWeightKg: TryGetDoubleVar(vars, "unitWeightKg", 10.0));
 
             data["createCatalogProduct"] = await sender.SendCommandAsync<CreateCatalogProductCommand, CatalogProductDto>(cmd, ct);
+        }
+
+        if (ContainsRootField(mutationText, "createCustomer"))
+        {
+            var cmd = new CreateB2BCustomerCommand(
+                Name: TryGetStringVar(vars, "name") ?? string.Empty,
+                SirenSiret: TryGetStringVar(vars, "sirenSiret") ?? string.Empty,
+                InvoicingAddress: TryGetStringVar(vars, "invoicingAddress") ?? string.Empty,
+                DeliveryAddress: TryGetStringVar(vars, "deliveryAddress"),
+                UseInvoicingAddressForDelivery: vars.TryGetValue("useInvoicingAddressForDelivery", out var bEl) && bEl.ValueKind == JsonValueKind.True,
+                Tags: CustomerGraphQLResolver.ParseTags(vars),
+                ContactEmail: TryGetStringVar(vars, "contactEmail"));
+
+            data["createCustomer"] = await sender.SendCommandAsync<CreateB2BCustomerCommand, B2BCustomerDto>(cmd, ct);
+        }
+
+        if (ContainsRootField(mutationText, "updateCustomer"))
+        {
+            var cidStr = TryGetStringVar(vars, "customerId") ?? TryGetStringVar(vars, "id");
+            if (!Guid.TryParse(cidStr, out var cid))
+            {
+                throw new ArgumentException("Valid customerId variable is required for updateCustomer.");
+            }
+
+            var cmd = new UpdateB2BCustomerCommand(
+                CustomerId: cid,
+                Name: TryGetStringVar(vars, "name") ?? string.Empty,
+                SirenSiret: TryGetStringVar(vars, "sirenSiret") ?? string.Empty,
+                InvoicingAddress: TryGetStringVar(vars, "invoicingAddress") ?? string.Empty,
+                DeliveryAddress: TryGetStringVar(vars, "deliveryAddress"),
+                UseInvoicingAddressForDelivery: vars.TryGetValue("useInvoicingAddressForDelivery", out var bEl) && bEl.ValueKind == JsonValueKind.True,
+                Tags: CustomerGraphQLResolver.ParseTags(vars),
+                ContactEmail: TryGetStringVar(vars, "contactEmail"));
+
+            data["updateCustomer"] = await sender.SendCommandAsync<UpdateB2BCustomerCommand, B2BCustomerDto>(cmd, ct);
+        }
+
+        if (ContainsRootField(mutationText, "deleteCustomer"))
+        {
+            var cidStr = TryGetStringVar(vars, "customerId") ?? TryGetStringVar(vars, "id");
+            if (!Guid.TryParse(cidStr, out var cid))
+            {
+                throw new ArgumentException("Valid customerId variable is required for deleteCustomer.");
+            }
+
+            data["deleteCustomer"] = await sender.SendCommandAsync<DeleteB2BCustomerCommand, bool>(
+                new DeleteB2BCustomerCommand(cid), ct);
         }
 
         if (ContainsRootField(mutationText, "createPurchaseOrder") || ContainsRootField(mutationText, "createOrder"))
