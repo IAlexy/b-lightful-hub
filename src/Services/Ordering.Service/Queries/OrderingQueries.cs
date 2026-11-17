@@ -1,69 +1,13 @@
 namespace Ordering.Service;
 
-using AutoMapper;
 using B2B.BuildingBlocks.Cqrs;
-using Microsoft.EntityFrameworkCore;
-using Ordering.Service.DataModels;
-using Ordering.Service.Entities;
-using Ordering.Service.Persistence;
 
-// =========================================================================
-// QUERY 1: GET ORDERS LIST (SQL Entity -> DataModel -> DTO via AutoMapper)
-// =========================================================================
-
+/// <summary>
+/// Pure Query data model to retrieve the list of B2B Purchase Orders.
+/// </summary>
 public sealed record GetPurchaseOrdersQuery(string? BuyerVatNumber = null) : IQuery<IReadOnlyList<PurchaseOrderDto>>;
 
-public sealed class GetPurchaseOrdersQueryHandler(
-    OrderingDbContext dbContext,
-    IMapper autoMapper) : IQueryHandler<GetPurchaseOrdersQuery, IReadOnlyList<PurchaseOrderDto>>
-{
-    public async Task<IReadOnlyList<PurchaseOrderDto>> HandleAsync(GetPurchaseOrdersQuery query, CancellationToken ct = default)
-    {
-        IQueryable<OrderEntity> sqlQuery = dbContext.Orders
-            .AsNoTracking()
-            .Include(o => o.Customer)
-            .Include(o => o.Lines);
-
-        if (!string.IsNullOrWhiteSpace(query.BuyerVatNumber))
-        {
-            sqlQuery = sqlQuery.Where(o => o.Customer.VatNumber == query.BuyerVatNumber);
-        }
-
-        var entities = await sqlQuery
-            .OrderByDescending(o => o.CreatedAtUtc)
-            .ToListAsync(ct);
-
-        // Map SQL Entities -> Domain DataModels -> Output DTOs via AutoMapper
-        var dataModels = autoMapper.Map<List<OrderDataModel>>(entities);
-        return autoMapper.Map<List<PurchaseOrderDto>>(dataModels);
-    }
-}
-
-// =========================================================================
-// QUERY 2: GET SPECIFIC ORDER BY ID (SQL Entity -> DataModel -> DTO)
-// =========================================================================
-
+/// <summary>
+/// Pure Query data model to retrieve a specific B2B Purchase Order by ID.
+/// </summary>
 public sealed record GetPurchaseOrderByIdQuery(Guid OrderId) : IQuery<PurchaseOrderDto?>;
-
-public sealed class GetPurchaseOrderByIdQueryHandler(
-    OrderingDbContext dbContext,
-    IMapper autoMapper) : IQueryHandler<GetPurchaseOrderByIdQuery, PurchaseOrderDto?>
-{
-    public async Task<PurchaseOrderDto?> HandleAsync(GetPurchaseOrderByIdQuery query, CancellationToken ct = default)
-    {
-        var entity = await dbContext.Orders
-            .AsNoTracking()
-            .Include(o => o.Customer)
-            .Include(o => o.Lines)
-            .FirstOrDefaultAsync(o => o.Id == query.OrderId, ct);
-
-        if (entity is null)
-        {
-            return null;
-        }
-
-        // Map SQL Entity -> Domain DataModel -> Output DTO via AutoMapper
-        var dataModel = autoMapper.Map<OrderEntity, OrderDataModel>(entity);
-        return autoMapper.Map<OrderDataModel, PurchaseOrderDto>(dataModel);
-    }
-}

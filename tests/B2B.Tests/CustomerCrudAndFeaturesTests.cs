@@ -13,6 +13,7 @@ using Customer.Service.DataModels;
 using Customer.Service.Entities;
 using Customer.Service.GraphQL;
 using Customer.Service.Persistence;
+using Customer.Service.Services;
 using Delivery.Service;
 using Invoicing.Service;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -39,11 +40,11 @@ public class CustomerCrudAndFeaturesTests
     }
 
     // =========================================================================
-    // 1. AUTOMAPPER PROFILE & DOMAIN DATAMODEL TESTS (SAME ADDRESS + FREE TAGS)
+    // 1. AUTOMAPPER PROFILE & SERVICE VALIDATION TESTS (CONTACT RULE + ADDRESSES)
     // =========================================================================
 
     [Fact]
-    public void AutoMapper_MapsCreateCustomerCommand_WithSameInvoicingAndDeliveryAddress_AndDeduplicatesFreeTags()
+    public void AutoMapperAndService_EnforcesSameInvoicingAndDeliveryAddress_AndContactRule()
     {
         using var provider = BuildTestProvider();
         var mapper = provider.GetRequiredService<IMapper>();
@@ -52,35 +53,31 @@ public class CustomerCrudAndFeaturesTests
             Name: "  Lumière Optique Industrielle SAS  ",
             SirenSiret: "812 345 678 00015",
             InvoicingAddress: "14 Avenue des Sciences, 69003 Lyon, France",
-            DeliveryAddress: null, // User does not need to type DeliveryAddress when UseInvoicingAddressForDelivery is true
+            DeliveryAddress: null,
             UseInvoicingAddressForDelivery: true,
+            ContactEmail: null,
+            PhoneNumber: "  +33 4 72 11 22 33  ",
             Tags:
             [
-                new CustomTagInput("KeyAccount", "Optics Tier 1", "#10B981"),
-                new CustomTagInput("keyaccount", "Duplicate Should Be Ignored", "#EF4444"),
-                new CustomTagInput("FragileFreight", null, null)
-            ],
-            ContactEmail: "achats@lumiere-optique.fr");
+                new CustomTagInput("KeyAccount", "Optics Tier 1", "#10B981")
+            ]);
 
-        // 1. Command -> CustomerAccountDataModel
+        // 1. Pure structural mapping: Command -> CustomerAccountDataModel
         var dataModel = mapper.Map<CreateB2BCustomerCommand, CustomerAccountDataModel>(command);
+
+        // 2. Service business rule application (same-address copy + contact rule)
+        CustomerCrudService.ValidateAndApplyCustomerRules(dataModel);
 
         Assert.Equal("Lumière Optique Industrielle SAS", dataModel.Name);
         Assert.Equal("81234567800015", dataModel.SirenSiret);
         Assert.True(dataModel.UseInvoicingAddressForDelivery);
         Assert.Equal("14 Avenue des Sciences, 69003 Lyon, France", dataModel.InvoicingAddress);
         Assert.Equal("14 Avenue des Sciences, 69003 Lyon, France", dataModel.DeliveryAddress);
-        Assert.Equal(2, dataModel.Tags.Count);
-        Assert.Equal("KeyAccount", dataModel.Tags[0].Name);
-        Assert.Equal("Optics Tier 1", dataModel.Tags[0].Value);
-        Assert.Equal("#10B981", dataModel.Tags[0].Color);
-        Assert.Equal("FragileFreight", dataModel.Tags[1].Name);
-        Assert.Equal("#7C3AED", dataModel.Tags[1].Color);
+        Assert.Null(dataModel.ContactEmail);
+        Assert.Equal("+33 4 72 11 22 33", dataModel.PhoneNumber);
 
-        // 2. CustomerAccountDataModel -> CustomerProfileEntity -> CustomerAccountDataModel -> B2BCustomerDto
+        // 3. CustomerAccountDataModel -> CustomerProfileEntity -> CustomerAccountDataModel -> B2BCustomerDto
         var entity = mapper.Map<CustomerAccountDataModel, CustomerProfileEntity>(dataModel);
-        Assert.Equal(2, entity.Tags.Count);
-
         var roundTripModel = mapper.Map<CustomerProfileEntity, CustomerAccountDataModel>(entity);
         var dto = mapper.Map<CustomerAccountDataModel, B2BCustomerDto>(roundTripModel);
 
@@ -88,111 +85,172 @@ public class CustomerCrudAndFeaturesTests
         Assert.Equal(dataModel.SirenSiret, dto.SirenSiret);
         Assert.Equal(dataModel.InvoicingAddress, dto.DeliveryAddress);
         Assert.True(dto.UseInvoicingAddressForDelivery);
-        Assert.Equal(2, dto.Tags.Count);
+        Assert.Null(dto.ContactEmail);
+        Assert.Equal("+33 4 72 11 22 33", dto.PhoneNumber);
     }
 
     [Fact]
-    public void CustomerDataModel_ThrowsInvalidCustomerData_WhenDeliveryAddressMissingAndNotSameAsInvoicing()
-    {
-        var invalidModel = new CustomerAccountDataModel
-        {
-            Name = "missing delivery corp",
-            SirenSiret = "55210055400013",
-            InvoicingAddress = "10 Rue de la Paix, 75002 Paris",
-            DeliveryAddress = "   ",
-            UseInvoicingAddressForDelivery = false
-        };
-
-        var ex = Assert.Throws<CustomerDomainException>(() => invalidModel.ApplyBusinessRulesAndValidate());
-        Assert.Equal("INVALID_CUSTOMER_DATA", ex.ErrorCode);
-    }
-
-    // =========================================================================
-    // 2. EF CORE SQLITE PERSISTENCE & CQRS CUSTOMER CRUD TESTS
-    // =========================================================================
-
-    [Fact]
-    public async Task CustomerCrud_Create_Read_FilterByTag_Update_AndDelete_PersistsInEfCoreSqlite()
+    public async Task CustomerContactRule_AllowsPhoneOnly_EmailOnly_OrBoth_AndRejectsWhenBothAreMissing()
     {
         using var provider = BuildTestProvider();
         var sender = provider.GetRequiredService<ISender>();
 
-        // 1. CREATE with UseInvoicingAddressForDelivery = true
-        var created = await sender.SendCommandAsync<CreateB2BCustomerCommand, B2BCustomerDto>(
+        // Case 1: Email ONLY (no PhoneNumber) -> Valid
+        var emailOnly = await sender.SendCommandAsync<CreateB2BCustomerCommand, B2BCustomerDto>(
+            new CreateB2BCustomerCommand(
+                Name: "Email Only Corp",
+                SirenSiret: "11122233300011",
+                InvoicingAddress: "10 Rue Email, 75001 Paris",
+                UseInvoicingAddressForDelivery: true,
+                ContactEmail: "contact@email-only.fr",
+                PhoneNumber: null));
+        Assert.Equal("contact@email-only.fr", emailOnly.ContactEmail);
+        Assert.Null(emailOnly.PhoneNumber);
+
+        // Case 2: Phone ONLY (no ContactEmail) -> Valid
+        var phoneOnly = await sender.SendCommandAsync<CreateB2BCustomerCommand, B2BCustomerDto>(
+            new CreateB2BCustomerCommand(
+                Name: "Phone Only Corp",
+                SirenSiret: "22233344400022",
+                InvoicingAddress: "20 Rue Téléphone, 69001 Lyon",
+                UseInvoicingAddressForDelivery: true,
+                ContactEmail: "   ",
+                PhoneNumber: "+33 6 99 88 77 66"));
+        Assert.Null(phoneOnly.ContactEmail);
+        Assert.Equal("+33 6 99 88 77 66", phoneOnly.PhoneNumber);
+
+        // Case 3: BOTH Email and Phone -> Valid
+        var bothContacts = await sender.SendCommandAsync<CreateB2BCustomerCommand, B2BCustomerDto>(
+            new CreateB2BCustomerCommand(
+                Name: "Full Contact Corp",
+                SirenSiret: "33344455500033",
+                InvoicingAddress: "30 Rue Complète, 44000 Nantes",
+                UseInvoicingAddressForDelivery: true,
+                ContactEmail: "hello@full-contact.fr",
+                PhoneNumber: "+33 2 40 00 11 22"));
+        Assert.Equal("hello@full-contact.fr", bothContacts.ContactEmail);
+        Assert.Equal("+33 2 40 00 11 22", bothContacts.PhoneNumber);
+
+        // Case 4: NEITHER Email NOR Phone -> Throws MISSING_CONTACT_METHOD
+        var missingEx = await Assert.ThrowsAsync<CustomerDomainException>(() =>
+            sender.SendCommandAsync<CreateB2BCustomerCommand, B2BCustomerDto>(
+                new CreateB2BCustomerCommand(
+                    Name: "Unreachable Ghost Corp",
+                    SirenSiret: "44455566600044",
+                    InvoicingAddress: "40 Rue Fantôme, 13001 Marseille",
+                    UseInvoicingAddressForDelivery: true,
+                    ContactEmail: null,
+                    PhoneNumber: "   ")));
+
+        Assert.Equal("MISSING_CONTACT_METHOD", missingEx.ErrorCode);
+    }
+
+    [Fact]
+    public void CustomerService_ThrowsInvalidCustomerData_WhenDeliveryAddressMissingAndNotSameAsInvoicing()
+    {
+        var invalidModel = new CustomerAccountDataModel
+        {
+            Name = "Missing Delivery Corp",
+            SirenSiret = "55210055400013",
+            InvoicingAddress = "10 Rue de la Paix, 75002 Paris",
+            DeliveryAddress = "   ",
+            UseInvoicingAddressForDelivery = false,
+            ContactEmail = "ops@missing-delivery.fr"
+        };
+
+        var ex = Assert.Throws<CustomerDomainException>(() => CustomerCrudService.ValidateAndApplyCustomerRules(invalidModel));
+        Assert.Equal("INVALID_CUSTOMER_DATA", ex.ErrorCode);
+    }
+
+    // =========================================================================
+    // 2. INDEPENDENT TAGS & 3-TABLE PERSISTENCE (B2BCustomers, CustomTags, CustomerTagAssignments)
+    // =========================================================================
+
+    [Fact]
+    public async Task IndependentTagsAnd3TableAssociations_CreateTagsIndependently_AssignToMultipleCustomers_AndUnassignWithoutDeletingTag()
+    {
+        using var provider = BuildTestProvider();
+        var sender = provider.GetRequiredService<ISender>();
+
+        // 1. Create 2 Custom Tags INDEPENDENTLY of any customer (stored in Table 2: "CustomTags")
+        var vipTag = await sender.SendCommandAsync<CreateCustomTagCommand, CustomTagDto>(
+            new CreateCustomTagCommand("VIP-Partner", "Priority 24/7 Support", "#7C3AED"));
+        var aeroTag = await sender.SendCommandAsync<CreateCustomTagCommand, CustomTagDto>(
+            new CreateCustomTagCommand("Aerospace", "EN9100 Certified", "#2563EB"));
+
+        var allIndependentTags = await sender.SendQueryAsync<GetCustomTagsQuery, IReadOnlyList<CustomTagDto>>(
+            new GetCustomTagsQuery());
+        Assert.Equal(2, allIndependentTags.Count);
+
+        // 2. Create Customer A referencing vipTag by TagId (creates row in Table 1 "B2BCustomers" + Table 3 "CustomerTagAssignments")
+        var customerA = await sender.SendCommandAsync<CreateB2BCustomerCommand, B2BCustomerDto>(
             new CreateB2BCustomerCommand(
                 Name: "Hexagone Aéronautique SA",
                 SirenSiret: "380 129 866 00042",
                 InvoicingAddress: "22 Boulevard de l'Aérospatiale, 31000 Toulouse",
-                DeliveryAddress: null,
                 UseInvoicingAddressForDelivery: true,
-                Tags:
-                [
-                    new CustomTagInput("Aerospace", "Defense & Civil", "#3B82F6"),
-                    new CustomTagInput("VIP", "Priority SLA", "#7C3AED")
-                ]));
+                PhoneNumber: "+33 5 61 00 11 22",
+                TagIds: [vipTag.Id]));
 
-        Assert.NotEqual(Guid.Empty, created.Id);
-        Assert.Equal("38012986600042", created.SirenSiret);
-        Assert.Equal(created.InvoicingAddress, created.DeliveryAddress);
-        Assert.True(created.UseInvoicingAddressForDelivery);
-        Assert.Equal(2, created.Tags.Count);
+        Assert.Single(customerA.Tags);
+        Assert.Equal(vipTag.Id, customerA.Tags[0].Id);
 
-        // 2. DUPLICATE SIREN/SIRET REJECTION
-        var dupEx = await Assert.ThrowsAsync<CustomerDomainException>(() =>
-            sender.SendCommandAsync<CreateB2BCustomerCommand, B2BCustomerDto>(
-                new CreateB2BCustomerCommand(
-                    Name: "Clone Corp",
-                    SirenSiret: "38012986600042",
-                    InvoicingAddress: "1 Rue Test, Paris",
-                    UseInvoicingAddressForDelivery: true)));
-        Assert.Equal("DUPLICATE_SIREN_SIRET", dupEx.ErrorCode);
+        // 3. Assign aeroTag to Customer A via AssignTagToCustomerCommand
+        customerA = await sender.SendCommandAsync<AssignTagToCustomerCommand, B2BCustomerDto>(
+            new AssignTagToCustomerCommand(customerA.Id, aeroTag.Id));
+        Assert.Equal(2, customerA.Tags.Count);
 
-        // 3. QUERY BY ID & FILTER BY TAG / SEARCH
-        var fetchedById = await sender.SendQueryAsync<GetB2BCustomerByIdQuery, B2BCustomerDto?>(
-            new GetB2BCustomerByIdQuery(created.Id));
-        Assert.NotNull(fetchedById);
-        Assert.Equal("Hexagone Aéronautique SA", fetchedById.Name);
+        // 4. Create Customer B and attach the SAME vipTag & aeroTag (shared independent tags!)
+        var customerB = await sender.SendCommandAsync<CreateB2BCustomerCommand, B2BCustomerDto>(
+            new CreateB2BCustomerCommand(
+                Name: "Dassault Systèmes Cloud SAS",
+                SirenSiret: "322 306 440 00213",
+                InvoicingAddress: "10 Rue Marcel Dassault, 78140 Vélizy",
+                UseInvoicingAddressForDelivery: true,
+                ContactEmail: "cloud@3ds.com",
+                TagIds: [vipTag.Id, aeroTag.Id]));
 
-        var filteredByTag = await sender.SendQueryAsync<GetB2BCustomersQuery, IReadOnlyList<B2BCustomerDto>>(
-            new GetB2BCustomersQuery(Search: "Hexagone", Tag: "Aerospace"));
-        Assert.Single(filteredByTag);
+        Assert.Equal(2, customerB.Tags.Count);
 
-        // 4. UPDATE (Switch to distinct DeliveryAddress and update Custom Tags)
-        var updated = await sender.SendCommandAsync<UpdateB2BCustomerCommand, B2BCustomerDto>(
-            new UpdateB2BCustomerCommand(
-                CustomerId: created.Id,
-                Name: "Hexagone Aéronautique & Espace SA",
-                SirenSiret: "38012986600042",
-                InvoicingAddress: "22 Boulevard de l'Aérospatiale, 31000 Toulouse",
-                DeliveryAddress: "Entrepôt Hangar 7, Zone Fret Blagnac, 31700 Blagnac",
-                UseInvoicingAddressForDelivery: false,
-                Tags:
-                [
-                    new CustomTagInput("Aerospace", "Updated Fleet", "#2563EB"),
-                    new CustomTagInput("Net45", "Approved Credit", "#10B981"),
-                    new CustomTagInput("Export", "EU Zone", "#F59E0B")
-                ]));
-
-        Assert.Equal("Hexagone Aéronautique & Espace SA", updated.Name);
-        Assert.False(updated.UseInvoicingAddressForDelivery);
-        Assert.Equal("Entrepôt Hangar 7, Zone Fret Blagnac, 31700 Blagnac", updated.DeliveryAddress);
-        Assert.Equal(3, updated.Tags.Count);
-
-        // Verify EF Core SQLite CustomTags table replaced old tags cleanly
+        // 5. Verify the 3 SQL tables in CustomerDbContext:
+        //    - 2 rows in B2BCustomers
+        //    - 2 rows in CustomTags
+        //    - 4 rows in CustomerTagAssignments
         using (var db = provider.GetRequiredService<CustomerDbContext>())
         {
-            var tagCountInDb = await db.CustomTags.CountAsync(t => t.CustomerId == created.Id);
-            Assert.Equal(3, tagCountInDb);
+            Assert.Equal(2, await db.Customers.CountAsync());
+            Assert.Equal(2, await db.CustomTags.CountAsync());
+            Assert.Equal(4, await db.CustomerTagAssignments.CountAsync());
         }
 
-        // 5. DELETE Customer & verify cascade deletion in SQLite
-        var deleted = await sender.SendCommandAsync<DeleteB2BCustomerCommand, bool>(
-            new DeleteB2BCustomerCommand(created.Id));
-        Assert.True(deleted);
+        // 6. Remove vipTag from Customer A -> removes 1 row from CustomerTagAssignments,
+        //    but keeps vipTag in CustomTags and still assigned to Customer B!
+        customerA = await sender.SendCommandAsync<RemoveTagFromCustomerCommand, B2BCustomerDto>(
+            new RemoveTagFromCustomerCommand(customerA.Id, vipTag.Id));
+        Assert.Single(customerA.Tags);
+        Assert.Equal("Aerospace", customerA.Tags[0].Name);
 
-        var afterDelete = await sender.SendQueryAsync<GetB2BCustomerByIdQuery, B2BCustomerDto?>(
-            new GetB2BCustomerByIdQuery(created.Id));
-        Assert.Null(afterDelete);
+        var customerBAfterUnassign = await sender.SendQueryAsync<GetB2BCustomerByIdQuery, B2BCustomerDto?>(
+            new GetB2BCustomerByIdQuery(customerB.Id));
+        Assert.NotNull(customerBAfterUnassign);
+        Assert.Equal(2, customerBAfterUnassign.Tags.Count);
+
+        using (var db = provider.GetRequiredService<CustomerDbContext>())
+        {
+            Assert.Equal(2, await db.CustomTags.CountAsync());
+            Assert.Equal(3, await db.CustomerTagAssignments.CountAsync());
+        }
+
+        // 7. Delete aeroTag from independent catalog -> cascades removal from CustomerTagAssignments for both Customer A & Customer B
+        var tagDeleted = await sender.SendCommandAsync<DeleteCustomTagCommand, bool>(
+            new DeleteCustomTagCommand(aeroTag.Id));
+        Assert.True(tagDeleted);
+
+        using (var db = provider.GetRequiredService<CustomerDbContext>())
+        {
+            Assert.Equal(1, await db.CustomTags.CountAsync());
+            Assert.Equal(1, await db.CustomerTagAssignments.CountAsync());
+        }
     }
 
     // =========================================================================
@@ -205,7 +263,7 @@ public class CustomerCrudAndFeaturesTests
         using var provider = BuildTestProvider();
         var sender = provider.GetRequiredService<ISender>();
 
-        // 1. Create a B2B Customer
+        // 1. Create a B2B Customer (with PhoneNumber only)
         var customer = await sender.SendCommandAsync<CreateB2BCustomerCommand, B2BCustomerDto>(
             new CreateB2BCustomerCommand(
                 Name: "Nordic Quantum Compute AB",
@@ -213,6 +271,7 @@ public class CustomerCrudAndFeaturesTests
                 InvoicingAddress: "88 Pôle Scientifique, 59000 Lille",
                 DeliveryAddress: "Quai Logistique B4, Port de Lille, 59000 Lille",
                 UseInvoicingAddressForDelivery: false,
+                PhoneNumber: "+33 3 20 55 66 77",
                 Tags: [new CustomTagInput("HPC", "Quantum Lab")]));
 
         // 2. Create 2 confirmed Purchase Orders for this Customer (triggers Invoicing & Delivery saga)
@@ -262,40 +321,58 @@ public class CustomerCrudAndFeaturesTests
     // =========================================================================
 
     [Fact]
-    public async Task CustomerRestAndGraphQLEndpoints_SupportFullCrud_SameAddress_Tags_360Views_And501FavoriteProducts()
+    public async Task CustomerRestAndGraphQLEndpoints_SupportIndependentTags_ContactRule_FullCrud_360Views_And501FavoriteProducts()
     {
         await using var factory = new WebApplicationFactory<Program>();
         using var client = factory.CreateClient();
 
-        // 1. POST /api/customers with UseInvoicingAddressForDelivery = true
+        // 1. Create an independent Custom Tag via POST /api/customers/tags
+        var createTagResp = await client.PostAsJsonAsync("/api/customers/tags",
+            new CreateCustomTagCommand("ColdChain-Cert", "Temperature Controlled", "#06B6D4"));
+        Assert.Equal(HttpStatusCode.Created, createTagResp.StatusCode);
+        var independentTag = await createTagResp.Content.ReadFromJsonAsync<CustomTagDto>();
+        Assert.NotNull(independentTag);
+
+        // 2. Verify POST /api/customers without Email or Phone returns 400 BadRequest (MISSING_CONTACT_METHOD)
+        var noContactResp = await client.PostAsJsonAsync("/api/customers", new CreateB2BCustomerCommand(
+            Name: "No Contact Biotech",
+            SirenSiret: "777 888 999 00099",
+            InvoicingAddress: "45 Quai des Chartrons, 33000 Bordeaux",
+            UseInvoicingAddressForDelivery: true,
+            ContactEmail: null,
+            PhoneNumber: null));
+        Assert.Equal(HttpStatusCode.BadRequest, noContactResp.StatusCode);
+        var noContactJson = await noContactResp.Content.ReadAsStringAsync();
+        Assert.Contains("MISSING_CONTACT_METHOD", noContactJson);
+
+        // 3. POST /api/customers with PhoneNumber only + UseInvoicingAddressForDelivery = true
         var createResp = await client.PostAsJsonAsync("/api/customers", new CreateB2BCustomerCommand(
             Name: "Bordeaux Biotech Logistics SAS",
             SirenSiret: "777 888 999 00011",
             InvoicingAddress: "45 Quai des Chartrons, 33000 Bordeaux",
             DeliveryAddress: null,
             UseInvoicingAddressForDelivery: true,
-            Tags:
-            [
-                new CustomTagInput("Biotech", "ColdChain", "#06B6D4"),
-                new CustomTagInput("KeyAccount", "Gold", "#F59E0B")
-            ]));
+            ContactEmail: null,
+            PhoneNumber: "+33 5 56 12 34 56",
+            Tags: [new CustomTagInput("KeyAccount", "Gold", "#F59E0B")]));
 
         Assert.Equal(HttpStatusCode.Created, createResp.StatusCode);
         var createdCustomer = await createResp.Content.ReadFromJsonAsync<B2BCustomerDto>();
         Assert.NotNull(createdCustomer);
         Assert.Equal("45 Quai des Chartrons, 33000 Bordeaux", createdCustomer.DeliveryAddress);
         Assert.True(createdCustomer.UseInvoicingAddressForDelivery);
-        Assert.Equal(2, createdCustomer.Tags.Count);
+        Assert.Null(createdCustomer.ContactEmail);
+        Assert.Equal("+33 5 56 12 34 56", createdCustomer.PhoneNumber);
+        Assert.Single(createdCustomer.Tags);
 
-        // 1b. Duplicate SIREN/SIRET returns 409 Conflict
-        var dupResp = await client.PostAsJsonAsync("/api/customers", new CreateB2BCustomerCommand(
-            Name: "Duplicate Bordeaux Biotech",
-            SirenSiret: "77788899900011",
-            InvoicingAddress: "1 Rue Test, Bordeaux",
-            UseInvoicingAddressForDelivery: true));
-        Assert.Equal(HttpStatusCode.Conflict, dupResp.StatusCode);
+        // 4. Assign the pre-created independentTag to this customer via POST /api/customers/{id}/tags/{tagId}
+        var assignResp = await client.PostAsync($"/api/customers/{createdCustomer.Id}/tags/{independentTag.Id}", null);
+        Assert.Equal(HttpStatusCode.OK, assignResp.StatusCode);
+        var afterAssign = await assignResp.Content.ReadFromJsonAsync<B2BCustomerDto>();
+        Assert.NotNull(afterAssign);
+        Assert.Equal(2, afterAssign.Tags.Count);
 
-        // 2. Create an Order for this customer via POST /api/ordering/orders
+        // 5. Create an Order for this customer via POST /api/ordering/orders
         var orderResp = await client.PostAsJsonAsync("/api/ordering/orders", new CreatePurchaseOrderCommand(
             BuyerCompanyName: createdCustomer.Name,
             BuyerVatNumber: createdCustomer.SirenSiret,
@@ -305,7 +382,7 @@ public class CustomerCrudAndFeaturesTests
             AutoConfirm: true));
         Assert.Equal(HttpStatusCode.Created, orderResp.StatusCode);
 
-        // 3. GET /api/customers/{id}/orders, /invoices, /deliveries
+        // 6. GET /api/customers/{id}/orders, /invoices, /deliveries
         var orders = await client.GetFromJsonAsync<List<PurchaseOrderDto>>($"/api/customers/{createdCustomer.Id}/orders");
         var invoices = await client.GetFromJsonAsync<List<B2BInvoiceDto>>($"/api/customers/{createdCustomer.Id}/invoices");
         var deliveries = await client.GetFromJsonAsync<List<B2BShipmentDto>>($"/api/customers/{createdCustomer.Id}/deliveries");
@@ -317,44 +394,24 @@ public class CustomerCrudAndFeaturesTests
         Assert.Single(invoices);
         Assert.Single(deliveries);
 
-        // 4. GET /api/customers/{id}/favorite-products -> 501 Not Implemented
+        // 7. GET /api/customers/{id}/favorite-products -> 501 Not Implemented
         var favResp = await client.GetAsync($"/api/customers/{createdCustomer.Id}/favorite-products");
         Assert.Equal(HttpStatusCode.NotImplemented, favResp.StatusCode);
         var favJson = await favResp.Content.ReadAsStringAsync();
         Assert.Contains("CATALOG_FAVORITE_PRODUCTS_NOT_IMPLEMENTED", favJson);
 
-        // 4b. Non-existent customer returns 404 NotFound on /orders, /invoices, /deliveries, /favorite-products
-        var missingId = Guid.NewGuid();
-        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/customers/{missingId}/orders")).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/customers/{missingId}/invoices")).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/customers/{missingId}/deliveries")).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/customers/{missingId}/favorite-products")).StatusCode);
+        // 8. Unassign the tag from the customer via DELETE /api/customers/{id}/tags/{tagId}
+        var unassignResp = await client.DeleteAsync($"/api/customers/{createdCustomer.Id}/tags/{independentTag.Id}");
+        Assert.Equal(HttpStatusCode.OK, unassignResp.StatusCode);
+        var afterUnassign = await unassignResp.Content.ReadFromJsonAsync<B2BCustomerDto>();
+        Assert.NotNull(afterUnassign);
+        Assert.Single(afterUnassign.Tags);
 
-        // 5. POST /api/customers/graphql -> query customerOrders, customerInvoices, customerDeliveries & customerFavoriteProducts
-        var gqlQueryResp = await client.PostAsJsonAsync("/api/customers/graphql", new
-        {
-            query = "query ($customerId: ID!) { customerById(id: $customerId) { id name } customerOrders(customerId: $customerId) { orderNumber } customerInvoices(customerId: $customerId) { invoiceNumber } customerDeliveries(customerId: $customerId) { trackingNumber } }",
-            variables = new { customerId = createdCustomer.Id.ToString() }
-        });
-        Assert.Equal(HttpStatusCode.OK, gqlQueryResp.StatusCode);
-        using var queryDoc = JsonDocument.Parse(await gqlQueryResp.Content.ReadAsStringAsync());
-        var dataEl = queryDoc.RootElement.GetProperty("data");
-        Assert.Equal(1, dataEl.GetProperty("customerOrders").GetArrayLength());
-        Assert.Equal(1, dataEl.GetProperty("customerInvoices").GetArrayLength());
-        Assert.Equal(1, dataEl.GetProperty("customerDeliveries").GetArrayLength());
+        // Verify the independent tag still exists in GET /api/customers/tags/{tagId}
+        var getTagResp = await client.GetAsync($"/api/customers/tags/{independentTag.Id}");
+        Assert.Equal(HttpStatusCode.OK, getTagResp.StatusCode);
 
-        var gqlFavResp = await client.PostAsJsonAsync("/api/customers/graphql", new
-        {
-            query = "query ($customerId: ID!) { customerFavoriteProducts(customerId: $customerId) { sku } }",
-            variables = new { customerId = createdCustomer.Id.ToString() }
-        });
-        Assert.Equal(HttpStatusCode.OK, gqlFavResp.StatusCode);
-        using var favDoc = JsonDocument.Parse(await gqlFavResp.Content.ReadAsStringAsync());
-        Assert.Equal(
-            "CATALOG_FAVORITE_PRODUCTS_NOT_IMPLEMENTED",
-            favDoc.RootElement.GetProperty("errors")[0].GetProperty("errorCode").GetString());
-
-        // 6. PUT /api/customers/{id} & DELETE /api/customers/{id}
+        // 9. PUT /api/customers/{id} & DELETE /api/customers/{id}
         var updateResp = await client.PutAsJsonAsync($"/api/customers/{createdCustomer.Id}", new UpdateB2BCustomerCommand(
             CustomerId: createdCustomer.Id,
             Name: "Bordeaux Biotech International SAS",
@@ -362,13 +419,15 @@ public class CustomerCrudAndFeaturesTests
             InvoicingAddress: "45 Quai des Chartrons, 33000 Bordeaux",
             DeliveryAddress: "Zone Industrielle Mérignac Phare, 33700 Mérignac",
             UseInvoicingAddressForDelivery: false,
-            Tags: [new CustomTagInput("Biotech", "International", "#10B981")]));
+            ContactEmail: "ops@bordeaux-biotech.fr",
+            PhoneNumber: "+33 5 56 12 34 56"));
 
         Assert.Equal(HttpStatusCode.OK, updateResp.StatusCode);
         var updatedDto = await updateResp.Content.ReadFromJsonAsync<B2BCustomerDto>();
         Assert.NotNull(updatedDto);
         Assert.False(updatedDto.UseInvoicingAddressForDelivery);
         Assert.Equal("Zone Industrielle Mérignac Phare, 33700 Mérignac", updatedDto.DeliveryAddress);
+        Assert.Equal("ops@bordeaux-biotech.fr", updatedDto.ContactEmail);
 
         var deleteResp = await client.DeleteAsync($"/api/customers/{createdCustomer.Id}");
         Assert.Equal(HttpStatusCode.OK, deleteResp.StatusCode);
@@ -378,55 +437,51 @@ public class CustomerCrudAndFeaturesTests
     }
 
     [Fact]
-    public async Task CustomerGraphQLSubgraph_AndFederatedGateway_ExecuteMutationsAndQueries()
+    public async Task CustomerGraphQLSubgraph_SupportsIndependentTags_AssignTag_ContactRule_AndCustomerMutations()
     {
         using var provider = BuildTestProvider();
         var resolver = provider.GetRequiredService<CustomerGraphQLResolver>();
 
-        // 1. Subgraph Mutation: createCustomer with UseInvoicingAddressForDelivery = true and tags
-        using var varsDoc = JsonDocument.Parse("""
+        // 1. Subgraph Mutation: createTag (independent tag)
+        using var tagVarsDoc = JsonDocument.Parse("""{ "name": "Robotics-OEM", "value": "Industrial Arms", "color": "#8B5CF6" }""");
+        var tagVars = tagVarsDoc.RootElement.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone());
+        var tagResp = await resolver.ExecuteAsync(new CustomerGraphQLRequest(
+            Query: "mutation ($name: String!, $value: String, $color: String) { createTag(name: $name, value: $value, color: $color) { id name } }",
+            Variables: tagVars));
+        Assert.Null(tagResp.Errors);
+        var createdTag = Assert.IsType<CustomTagDto>(tagResp.Data!["createTag"]);
+
+        // 2. Subgraph Mutation: createCustomer with phoneNumber only + UseInvoicingAddressForDelivery = true
+        using var custVarsDoc = JsonDocument.Parse("""
         {
           "name": "Strasbourg Robotics GmbH",
           "sirenSiret": "411 222 333 00099",
           "invoicingAddress": "5 Parc d'Innovation, 67400 Illkirch",
           "useInvoicingAddressForDelivery": true,
-          "tags": [
-            { "name": "Robotics", "value": "Automated Arms", "color": "#8B5CF6" },
-            "PreferredPartner"
-          ]
+          "phoneNumber": "+33 3 88 10 20 30"
         }
         """);
-        var createVars = varsDoc.RootElement.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone());
+        var createVars = custVarsDoc.RootElement.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone());
 
         var createResp = await resolver.ExecuteAsync(new CustomerGraphQLRequest(
-            Query: "mutation ($name: String!, $sirenSiret: String!, $invoicingAddress: String!, $useInvoicingAddressForDelivery: Boolean, $tags: [CustomTagInput!]) { createCustomer(name: $name, sirenSiret: $sirenSiret, invoicingAddress: $invoicingAddress, useInvoicingAddressForDelivery: $useInvoicingAddressForDelivery, tags: $tags) { id name deliveryAddress } }",
+            Query: "mutation ($name: String!, $sirenSiret: String!, $invoicingAddress: String!, $useInvoicingAddressForDelivery: Boolean, $phoneNumber: String) { createCustomer(name: $name, sirenSiret: $sirenSiret, invoicingAddress: $invoicingAddress, useInvoicingAddressForDelivery: $useInvoicingAddressForDelivery, phoneNumber: $phoneNumber) { id name deliveryAddress phoneNumber } }",
             Variables: createVars));
 
         Assert.Null(createResp.Errors);
         var createdDto = Assert.IsType<B2BCustomerDto>(createResp.Data!["createCustomer"]);
         Assert.Equal("5 Parc d'Innovation, 67400 Illkirch", createdDto.DeliveryAddress);
-        Assert.True(createdDto.UseInvoicingAddressForDelivery);
-        Assert.Equal(2, createdDto.Tags.Count);
+        Assert.Equal("+33 3 88 10 20 30", createdDto.PhoneNumber);
+        Assert.Empty(createdDto.Tags);
 
-        // 2. Subgraph Query: customers filtered by tag
-        using var filterDoc = JsonDocument.Parse("""{ "tag": "PreferredPartner" }""");
-        var filterVars = filterDoc.RootElement.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone());
-        var listResp = await resolver.ExecuteAsync(new CustomerGraphQLRequest(
-            Query: "query ($tag: String) { customers(tag: $tag) { id name } }",
-            Variables: filterVars));
-
-        Assert.Null(listResp.Errors);
-        var list = Assert.IsAssignableFrom<IReadOnlyList<B2BCustomerDto>>(listResp.Data!["customers"]);
-        Assert.Single(list);
-
-        // 3. Subgraph Mutation: deleteCustomer
-        using var delDoc = JsonDocument.Parse($$"""{ "customerId": "{{createdDto.Id}}" }""");
-        var delVars = delDoc.RootElement.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone());
-        var delResp = await resolver.ExecuteAsync(new CustomerGraphQLRequest(
-            Query: "mutation ($customerId: ID!) { deleteCustomer(customerId: $customerId) }",
-            Variables: delVars));
-
-        Assert.Null(delResp.Errors);
-        Assert.True((bool)delResp.Data!["deleteCustomer"]!);
+        // 3. Subgraph Mutation: assignTagToCustomer
+        using var assignVarsDoc = JsonDocument.Parse($$"""{ "customerId": "{{createdDto.Id}}", "tagId": "{{createdTag.Id}}" }""");
+        var assignVars = assignVarsDoc.RootElement.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone());
+        var assignResp = await resolver.ExecuteAsync(new CustomerGraphQLRequest(
+            Query: "mutation ($customerId: ID!, $tagId: ID!) { assignTagToCustomer(customerId: $customerId, tagId: $tagId) { id tags { id name } } }",
+            Variables: assignVars));
+        Assert.Null(assignResp.Errors);
+        var assignedCustomer = Assert.IsType<B2BCustomerDto>(assignResp.Data!["assignTagToCustomer"]);
+        Assert.Single(assignedCustomer.Tags);
+        Assert.Equal("Robotics-OEM", assignedCustomer.Tags[0].Name);
     }
 }

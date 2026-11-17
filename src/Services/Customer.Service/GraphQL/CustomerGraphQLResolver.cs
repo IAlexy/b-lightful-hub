@@ -19,9 +19,11 @@ public sealed record CustomerGraphQLResponse(
 
 /// <summary>
 /// Customer Microservice GraphQL Subgraph Resolver supporting:
-/// - Queries: customers(search, tag), customerById(id), customerOrders(customerId), customerInvoices(customerId),
+/// - Queries: customers(search, tag), customerById(id), tags(search), tagById(id),
+///            customerOrders(customerId), customerInvoices(customerId),
 ///            customerDeliveries(customerId), customerFavoriteProducts(customerId)
-/// - Mutations: createCustomer, updateCustomer, deleteCustomer
+/// - Mutations: createCustomer, updateCustomer, deleteCustomer,
+///              createTag, deleteTag, assignTagToCustomer, removeTagFromCustomer
 /// </summary>
 public sealed class CustomerGraphQLResolver(ISender sender)
 {
@@ -46,7 +48,8 @@ public sealed class CustomerGraphQLResolver(ISender sender)
           invoicingAddress: String!
           deliveryAddress: String!
           useInvoicingAddressForDelivery: Boolean!
-          contactEmail: String!
+          contactEmail: String
+          phoneNumber: String
           tags: [CustomTag!]!
           createdAtUtc: String!
           updatedAtUtc: String!
@@ -55,6 +58,8 @@ public sealed class CustomerGraphQLResolver(ISender sender)
         type Query {
           customers(search: String, tag: String): [B2BCustomer!]!
           customerById(id: ID!): B2BCustomer
+          tags(search: String): [CustomTag!]!
+          tagById(id: ID!): CustomTag
           customerOrders(customerId: ID!): [PurchaseOrder!]!
           customerInvoices(customerId: ID!): [B2BInvoice!]!
           customerDeliveries(customerId: ID!): [B2BShipment!]!
@@ -69,6 +74,8 @@ public sealed class CustomerGraphQLResolver(ISender sender)
             deliveryAddress: String
             useInvoicingAddressForDelivery: Boolean = false
             contactEmail: String
+            phoneNumber: String
+            tagIds: [ID!]
             tags: [CustomTagInput!]
           ): B2BCustomer!
           updateCustomer(
@@ -79,9 +86,15 @@ public sealed class CustomerGraphQLResolver(ISender sender)
             deliveryAddress: String
             useInvoicingAddressForDelivery: Boolean = false
             contactEmail: String
+            phoneNumber: String
+            tagIds: [ID!]
             tags: [CustomTagInput!]
           ): B2BCustomer!
           deleteCustomer(customerId: ID!): Boolean!
+          createTag(name: String!, value: String, color: String = "#7C3AED"): CustomTag!
+          deleteTag(tagId: ID!): Boolean!
+          assignTagToCustomer(customerId: ID!, tagId: ID!): B2BCustomer!
+          removeTagFromCustomer(customerId: ID!, tagId: ID!): B2BCustomer!
         }
         """;
 
@@ -147,6 +160,20 @@ public sealed class CustomerGraphQLResolver(ISender sender)
                 new GetB2BCustomerByIdQuery(customerId), ct);
         }
 
+        if (ContainsRootFieldOnly(queryText, "tags"))
+        {
+            var search = TryGetString(vars, "search");
+            data["tags"] = await sender.SendQueryAsync<GetCustomTagsQuery, IReadOnlyList<CustomTagDto>>(
+                new GetCustomTagsQuery(search), ct);
+        }
+
+        if (ContainsField(queryText, "tagById"))
+        {
+            var tagId = ParseGuidVar(vars, "tagId", "id");
+            data["tagById"] = await sender.SendQueryAsync<GetCustomTagByIdQuery, CustomTagDto?>(
+                new GetCustomTagByIdQuery(tagId), ct);
+        }
+
         if (ContainsField(queryText, "customerOrders"))
         {
             var customerId = ParseGuidVar(vars, "customerId", "id");
@@ -198,8 +225,10 @@ public sealed class CustomerGraphQLResolver(ISender sender)
                 InvoicingAddress: TryGetString(vars, "invoicingAddress") ?? string.Empty,
                 DeliveryAddress: TryGetString(vars, "deliveryAddress"),
                 UseInvoicingAddressForDelivery: TryGetBool(vars, "useInvoicingAddressForDelivery", false),
-                Tags: ParseTags(vars),
-                ContactEmail: TryGetString(vars, "contactEmail"));
+                ContactEmail: TryGetString(vars, "contactEmail"),
+                PhoneNumber: TryGetString(vars, "phoneNumber"),
+                TagIds: ParseGuidList(vars, "tagIds"),
+                Tags: ParseTags(vars));
 
             data["createCustomer"] = await sender.SendCommandAsync<CreateB2BCustomerCommand, B2BCustomerDto>(cmd, ct);
         }
@@ -214,8 +243,10 @@ public sealed class CustomerGraphQLResolver(ISender sender)
                 InvoicingAddress: TryGetString(vars, "invoicingAddress") ?? string.Empty,
                 DeliveryAddress: TryGetString(vars, "deliveryAddress"),
                 UseInvoicingAddressForDelivery: TryGetBool(vars, "useInvoicingAddressForDelivery", false),
-                Tags: ParseTags(vars),
-                ContactEmail: TryGetString(vars, "contactEmail"));
+                ContactEmail: TryGetString(vars, "contactEmail"),
+                PhoneNumber: TryGetString(vars, "phoneNumber"),
+                TagIds: ParseGuidList(vars, "tagIds"),
+                Tags: ParseTags(vars));
 
             data["updateCustomer"] = await sender.SendCommandAsync<UpdateB2BCustomerCommand, B2BCustomerDto>(cmd, ct);
         }
@@ -225,6 +256,39 @@ public sealed class CustomerGraphQLResolver(ISender sender)
             var customerId = ParseGuidVar(vars, "customerId", "id");
             data["deleteCustomer"] = await sender.SendCommandAsync<DeleteB2BCustomerCommand, bool>(
                 new DeleteB2BCustomerCommand(customerId), ct);
+        }
+
+        if (ContainsField(mutationText, "createTag"))
+        {
+            var cmd = new CreateCustomTagCommand(
+                Name: TryGetString(vars, "name") ?? string.Empty,
+                Value: TryGetString(vars, "value"),
+                Color: TryGetString(vars, "color") ?? "#7C3AED");
+
+            data["createTag"] = await sender.SendCommandAsync<CreateCustomTagCommand, CustomTagDto>(cmd, ct);
+        }
+
+        if (ContainsField(mutationText, "deleteTag"))
+        {
+            var tagId = ParseGuidVar(vars, "tagId", "id");
+            data["deleteTag"] = await sender.SendCommandAsync<DeleteCustomTagCommand, bool>(
+                new DeleteCustomTagCommand(tagId), ct);
+        }
+
+        if (ContainsField(mutationText, "assignTagToCustomer"))
+        {
+            var customerId = ParseGuidVar(vars, "customerId", "id");
+            var tagId = ParseGuidVar(vars, "tagId", "tagId");
+            data["assignTagToCustomer"] = await sender.SendCommandAsync<AssignTagToCustomerCommand, B2BCustomerDto>(
+                new AssignTagToCustomerCommand(customerId, tagId), ct);
+        }
+
+        if (ContainsField(mutationText, "removeTagFromCustomer"))
+        {
+            var customerId = ParseGuidVar(vars, "customerId", "id");
+            var tagId = ParseGuidVar(vars, "tagId", "tagId");
+            data["removeTagFromCustomer"] = await sender.SendCommandAsync<RemoveTagFromCustomerCommand, B2BCustomerDto>(
+                new RemoveTagFromCustomerCommand(customerId, tagId), ct);
         }
 
         if (data.Count == 0)
@@ -253,6 +317,9 @@ public sealed class CustomerGraphQLResolver(ISender sender)
             System.Text.RegularExpressions.RegexOptions.IgnoreCase,
             TimeSpan.FromSeconds(1));
 
+    private static bool ContainsRootFieldOnly(string query, string fieldName) =>
+        !ContainsField(query, "customers") && !ContainsField(query, "customerById") && ContainsField(query, fieldName);
+
     private static string? TryGetString(Dictionary<string, JsonElement> vars, string key) =>
         vars.TryGetValue(key, out var el) && el.ValueKind == JsonValueKind.String ? el.GetString() : null;
 
@@ -260,6 +327,25 @@ public sealed class CustomerGraphQLResolver(ISender sender)
         vars.TryGetValue(key, out var el) && (el.ValueKind == JsonValueKind.True || el.ValueKind == JsonValueKind.False)
             ? el.GetBoolean()
             : fallback;
+
+    public static IReadOnlyList<Guid>? ParseGuidList(Dictionary<string, JsonElement> vars, string key)
+    {
+        if (!vars.TryGetValue(key, out var arrEl) || arrEl.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var list = new List<Guid>();
+        foreach (var item in arrEl.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.String && Guid.TryParse(item.GetString(), out var g))
+            {
+                list.Add(g);
+            }
+        }
+
+        return list;
+    }
 
     public static IReadOnlyList<CustomTagInput>? ParseTags(Dictionary<string, JsonElement> vars)
     {

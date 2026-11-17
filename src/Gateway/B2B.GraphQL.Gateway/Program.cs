@@ -55,12 +55,13 @@ using (var scope = app.Services.CreateScope())
                 InvoicingAddress: "Parc Technologique de Grenoble, 38000 France",
                 DeliveryAddress: null,
                 UseInvoicingAddressForDelivery: true,
+                ContactEmail: "procurement@alpine-cloud.fr",
+                PhoneNumber: "+33 4 76 00 11 22",
                 Tags:
                 [
                     new CustomTagInput("VIP", "Strategic Account", "#7C3AED"),
                     new CustomTagInput("Datacenter", "Tier-IV", "#10B981")
-                ],
-                ContactEmail: "procurement@alpine-cloud.fr"));
+                ]));
     }
 
     var existing = await sender.SendQueryAsync<GetPurchaseOrdersQuery, IReadOnlyList<PurchaseOrderDto>>(new GetPurchaseOrdersQuery());
@@ -196,6 +197,89 @@ app.MapDelete("/api/customers/{id:guid}", async (Guid id, ISender sender, Cancel
     }
 })
 .WithName("DeleteB2BCustomer")
+.WithOpenApi();
+
+// Independent Custom Tags CRUD & Customer <-> Tag Associations (3rd Table)
+app.MapGet("/api/customers/tags", async ([FromQuery] string? search, ISender sender, CancellationToken ct) =>
+{
+    var tags = await sender.SendQueryAsync<GetCustomTagsQuery, IReadOnlyList<CustomTagDto>>(new GetCustomTagsQuery(search), ct);
+    return Results.Ok(tags);
+})
+.WithName("GetCustomTags")
+.WithOpenApi();
+
+app.MapGet("/api/customers/tags/{tagId:guid}", async (Guid tagId, ISender sender, CancellationToken ct) =>
+{
+    var tag = await sender.SendQueryAsync<GetCustomTagByIdQuery, CustomTagDto?>(new GetCustomTagByIdQuery(tagId), ct);
+    return tag is null ? Results.NotFound(new { errorCode = "TAG_NOT_FOUND", message = $"Custom tag {tagId} was not found." }) : Results.Ok(tag);
+})
+.WithName("GetCustomTagById")
+.WithOpenApi();
+
+app.MapPost("/api/customers/tags", async ([FromBody] CreateCustomTagCommand command, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var created = await sender.SendCommandAsync<CreateCustomTagCommand, CustomTagDto>(command, ct);
+        return Results.Created($"/api/customers/tags/{created.Id}", created);
+    }
+    catch (CustomerDomainException ex) when (ex.ErrorCode == "DUPLICATE_TAG_NAME")
+    {
+        return Results.Conflict(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CustomerDomainException ex)
+    {
+        return Results.BadRequest(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("CreateCustomTag")
+.WithOpenApi();
+
+app.MapDelete("/api/customers/tags/{tagId:guid}", async (Guid tagId, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var deleted = await sender.SendCommandAsync<DeleteCustomTagCommand, bool>(new DeleteCustomTagCommand(tagId), ct);
+        return Results.Ok(new { tagId, deleted });
+    }
+    catch (CustomerDomainException ex) when (ex.ErrorCode == "TAG_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("DeleteCustomTag")
+.WithOpenApi();
+
+app.MapPost("/api/customers/{customerId:guid}/tags/{tagId:guid}", async (Guid customerId, Guid tagId, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var updated = await sender.SendCommandAsync<AssignTagToCustomerCommand, B2BCustomerDto>(
+            new AssignTagToCustomerCommand(customerId, tagId), ct);
+        return Results.Ok(updated);
+    }
+    catch (CustomerDomainException ex) when (ex.ErrorCode is "CUSTOMER_NOT_FOUND" or "TAG_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("AssignTagToCustomer")
+.WithOpenApi();
+
+app.MapDelete("/api/customers/{customerId:guid}/tags/{tagId:guid}", async (Guid customerId, Guid tagId, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var updated = await sender.SendCommandAsync<RemoveTagFromCustomerCommand, B2BCustomerDto>(
+            new RemoveTagFromCustomerCommand(customerId, tagId), ct);
+        return Results.Ok(updated);
+    }
+    catch (CustomerDomainException ex) when (ex.ErrorCode is "CUSTOMER_NOT_FOUND" or "TAG_ASSIGNMENT_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("RemoveTagFromCustomer")
 .WithOpenApi();
 
 app.MapGet("/api/customers/{id:guid}/orders", async (Guid id, ISender sender, CancellationToken ct) =>

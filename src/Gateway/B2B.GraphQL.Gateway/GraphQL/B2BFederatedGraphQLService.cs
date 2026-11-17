@@ -311,8 +311,10 @@ public sealed class B2BFederatedGraphQLService(ISender sender)
                 InvoicingAddress: TryGetStringVar(vars, "invoicingAddress") ?? string.Empty,
                 DeliveryAddress: TryGetStringVar(vars, "deliveryAddress"),
                 UseInvoicingAddressForDelivery: vars.TryGetValue("useInvoicingAddressForDelivery", out var bEl) && bEl.ValueKind == JsonValueKind.True,
-                Tags: CustomerGraphQLResolver.ParseTags(vars),
-                ContactEmail: TryGetStringVar(vars, "contactEmail"));
+                ContactEmail: TryGetStringVar(vars, "contactEmail"),
+                PhoneNumber: TryGetStringVar(vars, "phoneNumber"),
+                TagIds: CustomerGraphQLResolver.ParseGuidList(vars, "tagIds"),
+                Tags: CustomerGraphQLResolver.ParseTags(vars));
 
             data["createCustomer"] = await sender.SendCommandAsync<CreateB2BCustomerCommand, B2BCustomerDto>(cmd, ct);
         }
@@ -332,8 +334,10 @@ public sealed class B2BFederatedGraphQLService(ISender sender)
                 InvoicingAddress: TryGetStringVar(vars, "invoicingAddress") ?? string.Empty,
                 DeliveryAddress: TryGetStringVar(vars, "deliveryAddress"),
                 UseInvoicingAddressForDelivery: vars.TryGetValue("useInvoicingAddressForDelivery", out var bEl) && bEl.ValueKind == JsonValueKind.True,
-                Tags: CustomerGraphQLResolver.ParseTags(vars),
-                ContactEmail: TryGetStringVar(vars, "contactEmail"));
+                ContactEmail: TryGetStringVar(vars, "contactEmail"),
+                PhoneNumber: TryGetStringVar(vars, "phoneNumber"),
+                TagIds: CustomerGraphQLResolver.ParseGuidList(vars, "tagIds"),
+                Tags: CustomerGraphQLResolver.ParseTags(vars));
 
             data["updateCustomer"] = await sender.SendCommandAsync<UpdateB2BCustomerCommand, B2BCustomerDto>(cmd, ct);
         }

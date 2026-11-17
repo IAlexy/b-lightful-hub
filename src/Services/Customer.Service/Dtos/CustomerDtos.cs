@@ -1,7 +1,7 @@
 namespace Customer.Service;
 
 /// <summary>
-/// Input model for creating or updating a free custom tag on a B2B Customer.
+/// Input model for creating or referencing a custom tag.
 /// </summary>
 public sealed record CustomTagInput(
     string Name,
@@ -9,7 +9,7 @@ public sealed record CustomTagInput(
     string? Color = "#7C3AED");
 
 /// <summary>
-/// Output DTO representing a custom tag attached to a B2B Customer.
+/// Output DTO representing an independent Custom Tag.
 /// </summary>
 public sealed record CustomTagDto(
     Guid Id,
@@ -19,7 +19,7 @@ public sealed record CustomTagDto(
 
 /// <summary>
 /// Output DTO representing a B2B Customer with its SIREN/SIRET, Invoicing & Delivery addresses,
-/// same-address flag, and free custom tags.
+/// same-address flag, ContactEmail, PhoneNumber, and associated Custom Tags.
 /// </summary>
 public sealed record B2BCustomerDto(
     Guid Id,
@@ -28,7 +28,8 @@ public sealed record B2BCustomerDto(
     string InvoicingAddress,
     string DeliveryAddress,
     bool UseInvoicingAddressForDelivery,
-    string ContactEmail,
+    string? ContactEmail,
+    string? PhoneNumber,
     IReadOnlyList<CustomTagDto> Tags,
     DateTime CreatedAtUtc,
     DateTime UpdatedAtUtc);

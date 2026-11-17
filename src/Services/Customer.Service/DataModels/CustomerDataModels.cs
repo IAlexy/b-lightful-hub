@@ -1,8 +1,7 @@
 namespace Customer.Service.DataModels;
 
 /// <summary>
-/// Domain exception thrown when Customer CRUD invariants are violated
-/// (e.g. customer not found, duplicate SIREN/SIRET, or missing required fields).
+/// Domain exception thrown when Customer or CustomTag business rules are violated.
 /// </summary>
 public sealed class CustomerDomainException(string errorCode, string message) : InvalidOperationException(message)
 {
@@ -22,20 +21,31 @@ public sealed class CustomerFavoriteProductsNotImplementedException(Guid custome
 }
 
 /// <summary>
-/// Domain DataModel representing a free custom tag attached to a B2B Customer.
+/// Pure DataModel representing an independent Custom Tag.
+/// Contains no business logic; treated by the CustomerCrudService.
 /// </summary>
 public class CustomTagDataModel
 {
     public Guid Id { get; set; } = Guid.NewGuid();
-    public Guid CustomerId { get; set; }
     public string Name { get; set; } = string.Empty;
     public string? Value { get; set; }
     public string Color { get; set; } = "#7C3AED";
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }
 
 /// <summary>
-/// Domain DataModel representing a B2B Customer with SIREN/SIRET, Invoicing & Delivery addresses
-/// (including automatic synchronization when UseInvoicingAddressForDelivery is true), and free custom tags.
+/// Pure DataModel representing a Customer <-> CustomTag association.
+/// Contains no business logic; treated by the CustomerCrudService.
+/// </summary>
+public class CustomerTagAssignmentDataModel
+{
+    public Guid CustomerId { get; set; }
+    public Guid TagId { get; set; }
+}
+
+/// <summary>
+/// Pure DataModel representing a B2B Customer.
+/// Contains no business logic; all validation and address/contact rules are executed in CustomerCrudService.
 /// </summary>
 public class CustomerAccountDataModel
 {
@@ -45,98 +55,27 @@ public class CustomerAccountDataModel
     public string InvoicingAddress { get; set; } = string.Empty;
     public string DeliveryAddress { get; set; } = string.Empty;
     public bool UseInvoicingAddressForDelivery { get; set; }
-    public string ContactEmail { get; set; } = string.Empty;
+    public string? ContactEmail { get; set; }
+    public string? PhoneNumber { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
+    public List<Guid> TagIds { get; set; } = [];
     public List<CustomTagDataModel> Tags { get; set; } = [];
+}
 
-    /// <summary>
-    /// Normalizes SIREN/SIRET, applies the "same invoicing and delivery address" rule when
-    /// <see cref="UseInvoicingAddressForDelivery"/> is true, normalizes custom tags, and validates required fields.
-    /// </summary>
-    public void ApplyBusinessRulesAndValidate()
-    {
-        Name = Name?.Trim() ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(Name))
-        {
-            throw new CustomerDomainException("INVALID_CUSTOMER_DATA", "Customer name is required.");
-        }
+/// <summary>
+/// Pure DataModel for filtering customers in list queries.
+/// </summary>
+public class CustomerFilterDataModel
+{
+    public string? Search { get; set; }
+    public string? Tag { get; set; }
+}
 
-        SirenSiret = NormalizeSirenSiret(SirenSiret);
-        if (string.IsNullOrWhiteSpace(SirenSiret) || SirenSiret.Length < 9)
-        {
-            throw new CustomerDomainException(
-                "INVALID_CUSTOMER_DATA",
-                "A valid SIREN (9 digits) or SIRET (14 digits) identifier is required.");
-        }
-
-        InvoicingAddress = InvoicingAddress?.Trim() ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(InvoicingAddress))
-        {
-            throw new CustomerDomainException("INVALID_CUSTOMER_DATA", "Invoicing address is required.");
-        }
-
-        // Feature: if invoicing and delivery addresses are marked as the same, copy InvoicingAddress automatically
-        if (UseInvoicingAddressForDelivery)
-        {
-            DeliveryAddress = InvoicingAddress;
-        }
-        else
-        {
-            DeliveryAddress = DeliveryAddress?.Trim() ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(DeliveryAddress))
-            {
-                throw new CustomerDomainException(
-                    "INVALID_CUSTOMER_DATA",
-                    "Delivery address is required when UseInvoicingAddressForDelivery is false.");
-            }
-
-            if (string.Equals(InvoicingAddress, DeliveryAddress, StringComparison.OrdinalIgnoreCase))
-            {
-                UseInvoicingAddressForDelivery = true;
-            }
-        }
-
-        ContactEmail = string.IsNullOrWhiteSpace(ContactEmail)
-            ? $"contact@{SirenSiret.ToLowerInvariant()}.b2b.fr"
-            : ContactEmail.Trim();
-
-        NormalizeTags();
-    }
-
-    public static string NormalizeSirenSiret(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return string.Empty;
-        }
-
-        return new string(raw.Where(char.IsLetterOrDigit).ToArray()).ToUpperInvariant();
-    }
-
-    private void NormalizeTags()
-    {
-        var deduplicated = new List<CustomTagDataModel>();
-        var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var tag in Tags)
-        {
-            var trimmedName = tag.Name?.Trim() ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(trimmedName) || !seenNames.Add(trimmedName))
-            {
-                continue;
-            }
-
-            deduplicated.Add(new CustomTagDataModel
-            {
-                Id = tag.Id == Guid.Empty ? Guid.NewGuid() : tag.Id,
-                CustomerId = Id,
-                Name = trimmedName,
-                Value = string.IsNullOrWhiteSpace(tag.Value) ? null : tag.Value.Trim(),
-                Color = string.IsNullOrWhiteSpace(tag.Color) ? "#7C3AED" : tag.Color.Trim()
-            });
-        }
-
-        Tags = deduplicated;
-    }
+/// <summary>
+/// Pure DataModel for looking up a resource by CustomerId.
+/// </summary>
+public class CustomerIdLookupDataModel
+{
+    public Guid CustomerId { get; set; }
 }
