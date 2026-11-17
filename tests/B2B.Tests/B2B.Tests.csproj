@@ -19,6 +19,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\BuildingBlocks\B2B.BuildingBlocks\B2B.BuildingBlocks.csproj" />
     <ProjectReference Include="..\..\src\Services\Catalog.Service\Catalog.Service.csproj" />
+    <ProjectReference Include="..\..\src\Services\Customer.Service\Customer.Service.csproj" />
     <ProjectReference Include="..\..\src\Services\Ordering.Service\Ordering.Service.csproj" />
     <ProjectReference Include="..\..\src\Services\Invoicing.Service\Invoicing.Service.csproj" />
     <ProjectReference Include="..\..\src\Services\Delivery.Service\Delivery.Service.csproj" />

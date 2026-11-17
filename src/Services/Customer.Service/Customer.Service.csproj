@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\BuildingBlocks\B2B.BuildingBlocks\B2B.BuildingBlocks.csproj" />
+    <ProjectReference Include="..\Catalog.Service\Catalog.Service.csproj" />
+    <ProjectReference Include="..\Ordering.Service\Ordering.Service.csproj" />
+    <ProjectReference Include="..\Invoicing.Service\Invoicing.Service.csproj" />
+    <ProjectReference Include="..\Delivery.Service\Delivery.Service.csproj" />
+  </ItemGroup>
+</Project>
