@@ -64,6 +64,7 @@ public sealed class CustomerGraphQLResolver(ISender sender)
           customerInvoices(customerId: ID!): [B2BInvoice!]!
           customerDeliveries(customerId: ID!): [B2BShipment!]!
           customerFavoriteProducts(customerId: ID!): [CustomerFavoriteProduct!]!
+          customerWishlist(customerId: ID!): [CustomerWishlistItem!]!
         }
 
         type Mutation {
@@ -95,6 +96,11 @@ public sealed class CustomerGraphQLResolver(ISender sender)
           deleteTag(tagId: ID!): Boolean!
           assignTagToCustomer(customerId: ID!, tagId: ID!): B2BCustomer!
           removeTagFromCustomer(customerId: ID!, tagId: ID!): B2BCustomer!
+          addFavoriteProduct(customerId: ID!, productId: ID!): CustomerFavoriteProduct!
+          removeFavoriteProduct(customerId: ID!, productId: ID!): Boolean!
+          addToWishlist(customerId: ID!, productId: ID!, note: String, priority: Int = 3): CustomerWishlistItem!
+          updateWishlistItem(customerId: ID!, productId: ID!, note: String, priority: Int!): CustomerWishlistItem!
+          removeFromWishlist(customerId: ID!, productId: ID!): Boolean!
         }
         """;
 
@@ -118,10 +124,6 @@ public sealed class CustomerGraphQLResolver(ISender sender)
             }
 
             return await ExecuteQueryAsync(q, vars, ct);
-        }
-        catch (DataModels.CustomerFavoriteProductsNotImplementedException ex)
-        {
-            return new CustomerGraphQLResponse(null, [new CustomerGraphQLError(ex.Message, ex.ErrorCode)]);
         }
         catch (DataModels.CustomerDomainException ex)
         {
@@ -200,6 +202,13 @@ public sealed class CustomerGraphQLResolver(ISender sender)
             var customerId = ParseGuidVar(vars, "customerId", "id");
             data["customerFavoriteProducts"] = await sender.SendQueryAsync<GetCustomerFavoriteProductsQuery, IReadOnlyList<CustomerFavoriteProductDto>>(
                 new GetCustomerFavoriteProductsQuery(customerId), ct);
+        }
+
+        if (ContainsField(queryText, "customerWishlist"))
+        {
+            var customerId = ParseGuidVar(vars, "customerId", "id");
+            data["customerWishlist"] = await sender.SendQueryAsync<GetCustomerWishlistQuery, IReadOnlyList<CustomerWishlistItemDto>>(
+                new GetCustomerWishlistQuery(customerId), ct);
         }
 
         if (data.Count == 0)
@@ -291,6 +300,50 @@ public sealed class CustomerGraphQLResolver(ISender sender)
                 new RemoveTagFromCustomerCommand(customerId, tagId), ct);
         }
 
+        if (ContainsField(mutationText, "addFavoriteProduct"))
+        {
+            var customerId = ParseGuidVar(vars, "customerId", "id");
+            var productId = ParseGuidVar(vars, "productId", "productId");
+            data["addFavoriteProduct"] = await sender.SendCommandAsync<AddManualFavoriteProductCommand, CustomerFavoriteProductDto>(
+                new AddManualFavoriteProductCommand(customerId, productId), ct);
+        }
+
+        if (ContainsField(mutationText, "removeFavoriteProduct"))
+        {
+            var customerId = ParseGuidVar(vars, "customerId", "id");
+            var productId = ParseGuidVar(vars, "productId", "productId");
+            data["removeFavoriteProduct"] = await sender.SendCommandAsync<RemoveManualFavoriteProductCommand, bool>(
+                new RemoveManualFavoriteProductCommand(customerId, productId), ct);
+        }
+
+        if (ContainsField(mutationText, "addToWishlist"))
+        {
+            var customerId = ParseGuidVar(vars, "customerId", "id");
+            var productId = ParseGuidVar(vars, "productId", "productId");
+            var note = TryGetString(vars, "note");
+            var priority = TryGetInt(vars, "priority", 3);
+            data["addToWishlist"] = await sender.SendCommandAsync<AddProductToWishlistCommand, CustomerWishlistItemDto>(
+                new AddProductToWishlistCommand(customerId, productId, note, priority), ct);
+        }
+
+        if (ContainsField(mutationText, "updateWishlistItem"))
+        {
+            var customerId = ParseGuidVar(vars, "customerId", "id");
+            var productId = ParseGuidVar(vars, "productId", "productId");
+            var note = TryGetString(vars, "note");
+            var priority = TryGetInt(vars, "priority", 3);
+            data["updateWishlistItem"] = await sender.SendCommandAsync<UpdateWishlistItemCommand, CustomerWishlistItemDto>(
+                new UpdateWishlistItemCommand(customerId, productId, note, priority), ct);
+        }
+
+        if (ContainsField(mutationText, "removeFromWishlist"))
+        {
+            var customerId = ParseGuidVar(vars, "customerId", "id");
+            var productId = ParseGuidVar(vars, "productId", "productId");
+            data["removeFromWishlist"] = await sender.SendCommandAsync<RemoveProductFromWishlistCommand, bool>(
+                new RemoveProductFromWishlistCommand(customerId, productId), ct);
+        }
+
         if (data.Count == 0)
         {
             return new CustomerGraphQLResponse(null, [new CustomerGraphQLError("Unknown Customer GraphQL mutation field.")]);
@@ -327,6 +380,9 @@ public sealed class CustomerGraphQLResolver(ISender sender)
         vars.TryGetValue(key, out var el) && (el.ValueKind == JsonValueKind.True || el.ValueKind == JsonValueKind.False)
             ? el.GetBoolean()
             : fallback;
+
+    private static int TryGetInt(Dictionary<string, JsonElement> vars, string key, int fallback) =>
+        vars.TryGetValue(key, out var el) && el.TryGetInt32(out var val) ? val : fallback;
 
     public static IReadOnlyList<Guid>? ParseGuidList(Dictionary<string, JsonElement> vars, string key)
     {

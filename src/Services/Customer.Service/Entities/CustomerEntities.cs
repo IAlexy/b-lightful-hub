@@ -18,6 +18,10 @@ public class CustomerProfileEntity
 
     // Navigation property to the 3rd association table ("CustomerTagAssignments")
     public ICollection<CustomerTagAssignmentEntity> TagAssignments { get; set; } = new List<CustomerTagAssignmentEntity>();
+
+    // Navigation properties for Manual Favorite Products & Wishlist
+    public ICollection<CustomerManualFavoriteEntity> ManualFavorites { get; set; } = new List<CustomerManualFavoriteEntity>();
+    public ICollection<CustomerWishlistItemEntity> WishlistItems { get; set; } = new List<CustomerWishlistItemEntity>();
 }
 
 /// <summary>
@@ -49,4 +53,35 @@ public class CustomerTagAssignmentEntity
     public CustomTagEntity Tag { get; set; } = null!;
 
     public DateTime AssignedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>
+/// Table 4 ("CustomerManualFavorites"): Products manually pinned as frequently reordered favorites by a B2B Customer.
+/// Combined with automatic purchase frequency in GetCustomerFavoriteProducts.
+/// </summary>
+public class CustomerManualFavoriteEntity
+{
+    public Guid CustomerId { get; set; }
+    public CustomerProfileEntity Customer { get; set; } = null!;
+
+    public Guid ProductId { get; set; }
+    public string Sku { get; set; } = string.Empty;
+    public DateTime AddedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>
+/// Table 5 ("CustomerWishlistItems"): Curated personal wishlist of products of the customer's taste,
+/// separate from frequently ordered favorite products.
+/// </summary>
+public class CustomerWishlistItemEntity
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid CustomerId { get; set; }
+    public CustomerProfileEntity Customer { get; set; } = null!;
+
+    public Guid ProductId { get; set; }
+    public string Sku { get; set; } = string.Empty;
+    public string? Note { get; set; }
+    public int Priority { get; set; } = 3;
+    public DateTime AddedAtUtc { get; set; } = DateTime.UtcNow;
 }

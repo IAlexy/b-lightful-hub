@@ -1,6 +1,7 @@
 namespace Ordering.Service;
 
 using AutoMapper;
+using B2B.BuildingBlocks.Messaging;
 using Microsoft.EntityFrameworkCore;
 using Ordering.Service.DataModels;
 using Ordering.Service.Persistence;
@@ -14,6 +15,7 @@ public interface IOrderCancellationService
 
 public sealed class OrderCancellationService(
     OrderingDbContext dbContext,
+    IEventBus eventBus,
     IMapper autoMapper) : IOrderCancellationService
 {
     public async Task<OrderCancellationResultDto> CancelOrderAsync(
@@ -34,6 +36,12 @@ public sealed class OrderCancellationService(
                 $"Purchase order {cancelModel.OrderId} was not found.");
         }
 
+        // Capture confirmation status and lines BEFORE cancellation so we can release reserved Catalog stock
+        var wasConfirmed = string.Equals(orderEntity.Status, PurchaseOrderStatus.Confirmed.ToString(), StringComparison.OrdinalIgnoreCase);
+        var releasedLines = orderEntity.Lines
+            .Select(l => new OrderLineItemEventPayload(l.Sku, l.ProductName, l.Quantity, l.UnitPriceHt, l.UnitWeightKg))
+            .ToList();
+
         // Map SQL Entity -> Domain DataModel via AutoMapper & enforce cancellation business rules
         var orderDataModel = autoMapper.Map<Ordering.Service.Entities.OrderEntity, OrderDataModel>(orderEntity);
         orderDataModel.ApplyCancellation(cancelModel.Reason);
@@ -45,6 +53,17 @@ public sealed class OrderCancellationService(
         orderEntity.TotalAmountHt = 0m;
 
         await dbContext.SaveChangesAsync(ct);
+
+        if (wasConfirmed && releasedLines.Count > 0)
+        {
+            await eventBus.PublishAsync(new OrderCancelledIntegrationEvent(
+                EventId: Guid.NewGuid(),
+                OccurredOnUtc: DateTime.UtcNow,
+                OrderId: orderEntity.Id,
+                OrderNumber: orderEntity.OrderNumber,
+                Reason: orderDataModel.CancellationReason ?? cancelModel.Reason,
+                ReleasedLines: releasedLines), ct);
+        }
 
         return autoMapper.Map<OrderDataModel, OrderCancellationResultDto>(orderDataModel);
     }
@@ -67,12 +86,21 @@ public sealed class OrderCancellationService(
                 $"Purchase order {cancelLineModel.OrderId} was not found.");
         }
 
+        var wasConfirmed = string.Equals(orderEntity.Status, PurchaseOrderStatus.Confirmed.ToString(), StringComparison.OrdinalIgnoreCase);
+
         // Map SQL Entity -> Domain DataModel via AutoMapper & enforce line-removal rules
         var orderDataModel = autoMapper.Map<Ordering.Service.Entities.OrderEntity, OrderDataModel>(orderEntity);
         var removedLine = orderDataModel.RemoveOrderLine(cancelLineModel.OrderLineId, cancelLineModel.Reason);
 
         // Remove the line from EF Core DbSet and update parent Order totals/status
         var lineEntity = orderEntity.Lines.First(l => l.Id == removedLine.Id);
+        var releasedLinePayload = new OrderLineItemEventPayload(
+            lineEntity.Sku,
+            lineEntity.ProductName,
+            lineEntity.Quantity,
+            lineEntity.UnitPriceHt,
+            lineEntity.UnitWeightKg);
+
         orderEntity.Lines.Remove(lineEntity);
         dbContext.OrderLines.Remove(lineEntity);
 
@@ -82,6 +110,18 @@ public sealed class OrderCancellationService(
         orderEntity.CancelledAtUtc = orderDataModel.CancelledAtUtc;
 
         await dbContext.SaveChangesAsync(ct);
+
+        if (wasConfirmed)
+        {
+            await eventBus.PublishAsync(new OrderLineCancelledIntegrationEvent(
+                EventId: Guid.NewGuid(),
+                OccurredOnUtc: DateTime.UtcNow,
+                OrderId: orderEntity.Id,
+                OrderNumber: orderEntity.OrderNumber,
+                OrderLineId: removedLine.Id,
+                Reason: cancelLineModel.Reason,
+                ReleasedLine: releasedLinePayload), ct);
+        }
 
         var resultDto = autoMapper.Map<OrderDataModel, OrderCancellationResultDto>(orderDataModel);
         return resultDto with { CancelledOrderLineId = removedLine.Id };

@@ -43,6 +43,11 @@ public sealed record GetCustomerInvoicesQuery(Guid CustomerId) : IQuery<IReadOnl
 public sealed record GetCustomerDeliveriesQuery(Guid CustomerId) : IQuery<IReadOnlyList<B2BShipmentDto>>;
 
 /// <summary>
-/// Pure Query data model to retrieve all Favorite Products for a B2B Customer.
+/// Pure Query data model to retrieve all Favorite Products (auto-ordered frequently + manual favorites) for a B2B Customer.
 /// </summary>
 public sealed record GetCustomerFavoriteProductsQuery(Guid CustomerId) : IQuery<IReadOnlyList<CustomerFavoriteProductDto>>;
+
+/// <summary>
+/// Pure Query data model to retrieve all Wishlist items saved by a B2B Customer.
+/// </summary>
+public sealed record GetCustomerWishlistQuery(Guid CustomerId) : IQuery<IReadOnlyList<CustomerWishlistItemDto>>;

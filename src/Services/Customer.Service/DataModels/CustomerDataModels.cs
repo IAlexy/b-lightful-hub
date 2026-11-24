@@ -9,18 +9,6 @@ public sealed class CustomerDomainException(string errorCode, string message) : 
 }
 
 /// <summary>
-/// Exception thrown when requesting a customer's favorite products before the Catalog & Products
-/// persistence feature is implemented.
-/// </summary>
-public sealed class CustomerFavoriteProductsNotImplementedException(Guid customerId, string customerName)
-    : NotImplementedException(
-        $"Retrieving favorite products for customer '{customerName}' ({customerId}) is not implemented yet: the full Catalog & Products feature will be implemented in a future iteration.")
-{
-    public string ErrorCode { get; } = "CATALOG_FAVORITE_PRODUCTS_NOT_IMPLEMENTED";
-    public Guid CustomerId { get; } = customerId;
-}
-
-/// <summary>
 /// Pure DataModel representing an independent Custom Tag.
 /// Contains no business logic; treated by the CustomerCrudService.
 /// </summary>

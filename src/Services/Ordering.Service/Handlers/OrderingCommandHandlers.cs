@@ -3,7 +3,8 @@ namespace Ordering.Service;
 using AutoMapper;
 using B2B.BuildingBlocks.Cqrs;
 using B2B.BuildingBlocks.Messaging;
-using Catalog.Service;
+using Catalog.Service.DataModels;
+using Catalog.Service.Services;
 using Microsoft.EntityFrameworkCore;
 using Ordering.Service.DataModels;
 using Ordering.Service.Entities;
@@ -12,7 +13,7 @@ using Ordering.Service.Persistence;
 public sealed class CreatePurchaseOrderCommandHandler(
     OrderingDbContext dbContext,
     OrderingSequenceGenerator sequenceGenerator,
-    CatalogDataStore catalogStore,
+    ICatalogService catalogService,
     IEventBus eventBus,
     IMapper autoMapper) : ICommandHandler<CreatePurchaseOrderCommand, PurchaseOrderDto>
 {
@@ -33,14 +34,50 @@ public sealed class CreatePurchaseOrderCommandHandler(
         var orderDataModel = autoMapper.Map<CreatePurchaseOrderCommand, OrderDataModel>(command);
         orderDataModel.OrderNumber = sequenceGenerator.NextOrderNumber();
 
-        // 2. Enrich OrderLineDataModels with B2B Catalog tiered pricing & weight
+        // 2. Enforce backend Catalog stock rules (anti-bypass: cannot order archived, out-of-stock, or > available stock)
+        //    and enrich OrderLineDataModels with B2B Catalog multi-tier pricing & weight
+        var aggregatedQtyBySku = orderDataModel.Lines
+            .GroupBy(l => l.Sku, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Sum(x => x.Quantity), StringComparer.OrdinalIgnoreCase);
+
         foreach (var line in orderDataModel.Lines)
         {
-            line.OrderId = orderDataModel.Id;
-            if (catalogStore.ProductsBySku.TryGetValue(line.Sku, out var catalogProduct))
+            if (line.Quantity <= 0)
             {
+                throw new CatalogDomainException(
+                    "INVALID_STOCK_OPERATION",
+                    $"Order quantity for SKU '{line.Sku}' must be strictly positive.");
+            }
+
+            line.OrderId = orderDataModel.Id;
+            var catalogProduct = await catalogService.GetProductBySkuAsync(line.Sku, includeArchived: true, ct);
+            if (catalogProduct is not null)
+            {
+                if (catalogProduct.IsArchived)
+                {
+                    throw new CatalogDomainException(
+                        "PRODUCT_ARCHIVED",
+                        $"Cannot order archived product '{catalogProduct.Sku}'.");
+                }
+
+                if (catalogProduct.AvailableStock <= 0)
+                {
+                    throw new CatalogDomainException(
+                        "OUT_OF_STOCK",
+                        $"Cannot order '{catalogProduct.Sku}': product is currently out of stock.");
+                }
+
+                var totalRequestedForSku = aggregatedQtyBySku[line.Sku];
+                if (totalRequestedForSku > catalogProduct.AvailableStock)
+                {
+                    throw new CatalogDomainException(
+                        "INSUFFICIENT_STOCK",
+                        $"Cannot order {totalRequestedForSku} unit(s) of '{catalogProduct.Sku}': only {catalogProduct.AvailableStock} available in stock.");
+                }
+
+                var effectivePrice = await catalogService.ComputeEffectiveUnitPriceAsync(line.Sku, line.Quantity, ct);
                 line.ProductName = catalogProduct.Name;
-                line.UnitPriceHt = catalogProduct.ComputeEffectiveUnitPrice(line.Quantity);
+                line.UnitPriceHt = effectivePrice ?? catalogProduct.UnitPriceHt;
                 line.UnitWeightKg = catalogProduct.UnitWeightKg;
             }
             else

@@ -68,3 +68,30 @@ public sealed record OrderConfirmedIntegrationEvent(
     string ShippingDestination,
     decimal TotalAmountHt,
     IReadOnlyList<OrderLineItemEventPayload> Lines) : IIntegrationEvent;
+
+/// <summary>
+/// Published by Ordering.Service when a confirmed B2B Purchase Order is cancelled.
+/// Consumed by:
+/// - Catalog.Service (automatic stock release back to available stock + refill alerts if stock was 0)
+/// </summary>
+public sealed record OrderCancelledIntegrationEvent(
+    Guid EventId,
+    DateTime OccurredOnUtc,
+    Guid OrderId,
+    string OrderNumber,
+    string Reason,
+    IReadOnlyList<OrderLineItemEventPayload> ReleasedLines) : IIntegrationEvent;
+
+/// <summary>
+/// Published by Ordering.Service when a single OrderLine is cancelled on a confirmed B2B Purchase Order.
+/// Consumed by:
+/// - Catalog.Service (automatic stock release for that SKU + refill alerts if stock was 0)
+/// </summary>
+public sealed record OrderLineCancelledIntegrationEvent(
+    Guid EventId,
+    DateTime OccurredOnUtc,
+    Guid OrderId,
+    string OrderNumber,
+    Guid OrderLineId,
+    string Reason,
+    OrderLineItemEventPayload ReleasedLine) : IIntegrationEvent;

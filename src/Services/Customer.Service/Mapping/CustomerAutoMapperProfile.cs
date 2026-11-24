@@ -63,6 +63,7 @@ public sealed class CustomerAutoMapperProfile : Profile
         CreateMap<GetCustomerInvoicesQuery, CustomerIdLookupDataModel>();
         CreateMap<GetCustomerDeliveriesQuery, CustomerIdLookupDataModel>();
         CreateMap<GetCustomerFavoriteProductsQuery, CustomerIdLookupDataModel>();
+        CreateMap<GetCustomerWishlistQuery, CustomerIdLookupDataModel>();
 
         // 5. Domain DataModel <-> EF Core SQL Entity (CustomerProfileEntity + TagAssignments)
         CreateMap<CustomerAccountDataModel, CustomerProfileEntity>()
