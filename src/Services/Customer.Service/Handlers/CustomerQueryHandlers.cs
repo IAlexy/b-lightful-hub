@@ -89,3 +89,16 @@ public sealed class GetCustomerFavoriteProductsQueryHandler(
         return customerService.GetCustomerFavoriteProductsAsync(lookup.CustomerId, ct);
     }
 }
+
+public sealed class GetCustomerWishlistQueryHandler(
+    ICustomerService customerService,
+    IMapper autoMapper) : IQueryHandler<GetCustomerWishlistQuery, IReadOnlyList<CustomerWishlistItemDto>>
+{
+    public Task<IReadOnlyList<CustomerWishlistItemDto>> HandleAsync(
+        GetCustomerWishlistQuery query,
+        CancellationToken ct = default)
+    {
+        var lookup = autoMapper.Map<GetCustomerWishlistQuery, CustomerIdLookupDataModel>(query);
+        return customerService.GetCustomerWishlistAsync(lookup.CustomerId, ct);
+    }
+}

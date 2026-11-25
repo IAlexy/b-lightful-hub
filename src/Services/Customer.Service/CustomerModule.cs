@@ -56,6 +56,11 @@ public static class CustomerServiceRegistration
         services.AddTransient<ICommandHandler<DeleteCustomTagCommand, bool>, DeleteCustomTagCommandHandler>();
         services.AddTransient<ICommandHandler<AssignTagToCustomerCommand, B2BCustomerDto>, AssignTagToCustomerCommandHandler>();
         services.AddTransient<ICommandHandler<RemoveTagFromCustomerCommand, B2BCustomerDto>, RemoveTagFromCustomerCommandHandler>();
+        services.AddTransient<ICommandHandler<AddManualFavoriteProductCommand, CustomerFavoriteProductDto>, AddManualFavoriteProductCommandHandler>();
+        services.AddTransient<ICommandHandler<RemoveManualFavoriteProductCommand, bool>, RemoveManualFavoriteProductCommandHandler>();
+        services.AddTransient<ICommandHandler<AddProductToWishlistCommand, CustomerWishlistItemDto>, AddProductToWishlistCommandHandler>();
+        services.AddTransient<ICommandHandler<UpdateWishlistItemCommand, CustomerWishlistItemDto>, UpdateWishlistItemCommandHandler>();
+        services.AddTransient<ICommandHandler<RemoveProductFromWishlistCommand, bool>, RemoveProductFromWishlistCommandHandler>();
 
         // Query Handlers (in Handlers/CustomerQueryHandlers.cs)
         services.AddTransient<IQueryHandler<GetB2BCustomersQuery, IReadOnlyList<B2BCustomerDto>>, GetB2BCustomersQueryHandler>();
@@ -66,6 +71,7 @@ public static class CustomerServiceRegistration
         services.AddTransient<IQueryHandler<GetCustomerInvoicesQuery, IReadOnlyList<B2BInvoiceDto>>, GetCustomerInvoicesQueryHandler>();
         services.AddTransient<IQueryHandler<GetCustomerDeliveriesQuery, IReadOnlyList<B2BShipmentDto>>, GetCustomerDeliveriesQueryHandler>();
         services.AddTransient<IQueryHandler<GetCustomerFavoriteProductsQuery, IReadOnlyList<CustomerFavoriteProductDto>>, GetCustomerFavoriteProductsQueryHandler>();
+        services.AddTransient<IQueryHandler<GetCustomerWishlistQuery, IReadOnlyList<CustomerWishlistItemDto>>, GetCustomerWishlistQueryHandler>();
 
         services.AddTransient<CustomerGraphQLResolver>();
 

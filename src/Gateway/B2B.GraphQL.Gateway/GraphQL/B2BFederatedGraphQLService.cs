@@ -3,6 +3,7 @@ namespace B2B.GraphQL.Gateway.GraphQL;
 using System.Text.Json;
 using B2B.BuildingBlocks.Cqrs;
 using Catalog.Service;
+using Catalog.Service.GraphQL;
 using Customer.Service;
 using Customer.Service.GraphQL;
 using Delivery.Service;
@@ -59,14 +60,19 @@ public sealed class B2BFederatedGraphQLService(ISender sender)
 
         type Query {
           dashboard: B2BDashboardMetrics!
-          catalog(category: String): [CatalogProduct!]!
-          productBySku(sku: String!): CatalogProduct
+          catalog(category: String, search: String, tag: String, lowStockOnly: Boolean, inStockOnly: Boolean, includeArchived: Boolean = false): [CatalogProduct!]!
+          productById(id: ID!, includeArchived: Boolean = true): CatalogProduct
+          productBySku(sku: String!, includeArchived: Boolean = false): CatalogProduct
+          validateProductAvailability(sku: String!, requestedQuantity: Int!): ProductAvailabilityCheck!
+          catalogCategories(search: String): [CatalogCategory!]!
+          productTags(search: String): [ProductTag!]!
           customers(search: String, tag: String): [B2BCustomer!]!
           customerById(id: ID!): B2BCustomer
           customerOrders(customerId: ID!): [PurchaseOrder!]!
           customerInvoices(customerId: ID!): [B2BInvoice!]!
           customerDeliveries(customerId: ID!): [B2BShipment!]!
           customerFavoriteProducts(customerId: ID!): [CustomerFavoriteProduct!]!
+          customerWishlist(customerId: ID!): [CustomerWishlistItem!]!
           orders: [FederatedOrderNode!]!
           orderById(id: ID!): FederatedOrderNode
           invoices: [B2BInvoice!]!
@@ -74,10 +80,18 @@ public sealed class B2BFederatedGraphQLService(ISender sender)
         }
 
         type Mutation {
-          createCatalogProduct(sku: String!, name: String!, category: String!, unitPriceHt: Float!, bulkTierMinQuantity: Int!, bulkUnitPriceHt: Float!, initialStock: Int!, unitWeightKg: Float!): CatalogProduct!
+          createCatalogProduct(sku: String!, name: String!, category: String!, unitPriceHt: Float!, bulkTierMinQuantity: Int!, bulkUnitPriceHt: Float!, initialStock: Int!, unitWeightKg: Float!, description: String, volumePriceTiers: [VolumePriceTierInput!], tagIds: [ID!], tags: [ProductTagInput!]): CatalogProduct!
+          archiveCatalogProduct(productId: ID!): CatalogProduct!
+          unarchiveCatalogProduct(productId: ID!): CatalogProduct!
+          restockCatalogProduct(productId: ID!, quantityAdded: Int!): RestockResult!
+          subscribeStockRefillAlert(productId: ID!, email: String!, customerId: ID): StockRefillAlert!
           createCustomer(name: String!, sirenSiret: String!, invoicingAddress: String!, deliveryAddress: String, useInvoicingAddressForDelivery: Boolean = false, contactEmail: String, tags: [CustomTagInput!]): B2BCustomer!
           updateCustomer(customerId: ID!, name: String!, sirenSiret: String!, invoicingAddress: String!, deliveryAddress: String, useInvoicingAddressForDelivery: Boolean = false, contactEmail: String, tags: [CustomTagInput!]): B2BCustomer!
           deleteCustomer(customerId: ID!): Boolean!
+          addFavoriteProduct(customerId: ID!, productId: ID!): CustomerFavoriteProduct!
+          removeFavoriteProduct(customerId: ID!, productId: ID!): Boolean!
+          addToWishlist(customerId: ID!, productId: ID!, note: String, priority: Int = 3): CustomerWishlistItem!
+          removeFromWishlist(customerId: ID!, productId: ID!): Boolean!
           createPurchaseOrder(buyerCompanyName: String!, buyerVatNumber: String!, paymentTermsDays: Int!, shippingDestination: String!): FederatedOrderNode!
           cancelOrder(orderId: ID!, reason: String): OrderCancellationResult!
           cancelOrderLine(orderId: ID!, lineId: ID!, reason: String): OrderCancellationResult!
@@ -162,9 +176,22 @@ public sealed class B2BFederatedGraphQLService(ISender sender)
 
         if (ContainsRootField(queryText, "catalog"))
         {
-            var category = TryGetStringVar(vars, "category");
             data["catalog"] = await sender.SendQueryAsync<GetCatalogProductsQuery, IReadOnlyList<CatalogProductDto>>(
-                new GetCatalogProductsQuery(category), ct);
+                new GetCatalogProductsQuery(
+                    Category: TryGetStringVar(vars, "category"),
+                    Search: TryGetStringVar(vars, "search"),
+                    Tag: TryGetStringVar(vars, "tag"),
+                    LowStockOnly: TryGetNullableBoolVar(vars, "lowStockOnly"),
+                    InStockOnly: TryGetNullableBoolVar(vars, "inStockOnly"),
+                    IncludeArchived: vars.TryGetValue("includeArchived", out var incEl) && incEl.ValueKind == JsonValueKind.True), ct);
+        }
+
+        if (ContainsRootField(queryText, "productById"))
+        {
+            var idStr = TryGetStringVar(vars, "id") ?? TryGetStringVar(vars, "productId");
+            data["productById"] = Guid.TryParse(idStr, out var pid)
+                ? await sender.SendQueryAsync<GetCatalogProductByIdQuery, CatalogProductDto?>(new GetCatalogProductByIdQuery(pid), ct)
+                : null;
         }
 
         if (ContainsRootField(queryText, "productBySku"))
@@ -172,6 +199,26 @@ public sealed class B2BFederatedGraphQLService(ISender sender)
             var sku = TryGetStringVar(vars, "sku") ?? "SRV-RACK-42U";
             data["productBySku"] = await sender.SendQueryAsync<GetCatalogProductBySkuQuery, CatalogProductDto?>(
                 new GetCatalogProductBySkuQuery(sku), ct);
+        }
+
+        if (ContainsRootField(queryText, "validateProductAvailability"))
+        {
+            var sku = TryGetStringVar(vars, "sku") ?? string.Empty;
+            var qty = TryGetIntVar(vars, "requestedQuantity", 1);
+            data["validateProductAvailability"] = await sender.SendQueryAsync<ValidateProductAvailabilityQuery, ProductAvailabilityCheckDto>(
+                new ValidateProductAvailabilityQuery(sku, qty), ct);
+        }
+
+        if (ContainsRootField(queryText, "catalogCategories"))
+        {
+            data["catalogCategories"] = await sender.SendQueryAsync<GetCatalogCategoriesQuery, IReadOnlyList<CatalogCategoryDto>>(
+                new GetCatalogCategoriesQuery(TryGetStringVar(vars, "search")), ct);
+        }
+
+        if (ContainsRootField(queryText, "productTags"))
+        {
+            data["productTags"] = await sender.SendQueryAsync<GetProductTagsQuery, IReadOnlyList<ProductTagDto>>(
+                new GetProductTagsQuery(TryGetStringVar(vars, "search")), ct);
         }
 
         if (ContainsRootField(queryText, "customers"))
@@ -232,6 +279,17 @@ public sealed class B2BFederatedGraphQLService(ISender sender)
             }
             data["customerFavoriteProducts"] = await sender.SendQueryAsync<GetCustomerFavoriteProductsQuery, IReadOnlyList<CustomerFavoriteProductDto>>(
                 new GetCustomerFavoriteProductsQuery(cid), ct);
+        }
+
+        if (ContainsRootField(queryText, "customerWishlist"))
+        {
+            var idStr = TryGetStringVar(vars, "customerId") ?? TryGetStringVar(vars, "id");
+            if (!Guid.TryParse(idStr, out var cid))
+            {
+                throw new ArgumentException("Valid customerId variable is required for customerWishlist.");
+            }
+            data["customerWishlist"] = await sender.SendQueryAsync<GetCustomerWishlistQuery, IReadOnlyList<CustomerWishlistItemDto>>(
+                new GetCustomerWishlistQuery(cid), ct);
         }
 
         if (ContainsRootField(queryText, "orders"))
@@ -298,10 +356,16 @@ public sealed class B2BFederatedGraphQLService(ISender sender)
                 BulkTierMinQuantity: TryGetIntVar(vars, "bulkTierMinQuantity", 5),
                 BulkUnitPriceHt: TryGetDecimalVar(vars, "bulkUnitPriceHt", 850m),
                 InitialStock: TryGetIntVar(vars, "initialStock", 25),
-                UnitWeightKg: TryGetDoubleVar(vars, "unitWeightKg", 10.0));
+                UnitWeightKg: TryGetDoubleVar(vars, "unitWeightKg", 10.0),
+                Description: TryGetStringVar(vars, "description"),
+                VolumePriceTiers: CatalogGraphQLResolver.ParseVolumeTiers(vars, "volumePriceTiers"),
+                TagIds: CatalogGraphQLResolver.ParseGuidList(vars, "tagIds"),
+                Tags: CatalogGraphQLResolver.ParseProductTags(vars));
 
             data["createCatalogProduct"] = await sender.SendCommandAsync<CreateCatalogProductCommand, CatalogProductDto>(cmd, ct);
         }
+
+        await ExecuteCatalogAndWishlistMutationsAsync(mutationText, vars, data, ct);
 
         if (ContainsRootField(mutationText, "createCustomer"))
         {
@@ -433,6 +497,95 @@ public sealed class B2BFederatedGraphQLService(ISender sender)
 
         return new GraphQLResponse(data);
     }
+
+    private async Task ExecuteCatalogAndWishlistMutationsAsync(
+        string mutationText,
+        Dictionary<string, JsonElement> vars,
+        Dictionary<string, object?> data,
+        CancellationToken ct)
+    {
+        if (ContainsRootField(mutationText, "archiveCatalogProduct"))
+        {
+            var pid = ParseRequiredGuid(vars, "productId", "id", "archiveCatalogProduct");
+            data["archiveCatalogProduct"] = await sender.SendCommandAsync<ArchiveCatalogProductCommand, CatalogProductDto>(
+                new ArchiveCatalogProductCommand(pid), ct);
+        }
+
+        if (ContainsRootField(mutationText, "unarchiveCatalogProduct"))
+        {
+            var pid = ParseRequiredGuid(vars, "productId", "id", "unarchiveCatalogProduct");
+            data["unarchiveCatalogProduct"] = await sender.SendCommandAsync<UnarchiveCatalogProductCommand, CatalogProductDto>(
+                new UnarchiveCatalogProductCommand(pid), ct);
+        }
+
+        if (ContainsRootField(mutationText, "restockCatalogProduct"))
+        {
+            var pid = ParseRequiredGuid(vars, "productId", "id", "restockCatalogProduct");
+            var qty = TryGetIntVar(vars, "quantityAdded", 0);
+            data["restockCatalogProduct"] = await sender.SendCommandAsync<RestockCatalogProductCommand, RestockResultDto>(
+                new RestockCatalogProductCommand(pid, qty), ct);
+        }
+
+        if (ContainsRootField(mutationText, "subscribeStockRefillAlert"))
+        {
+            var pid = ParseRequiredGuid(vars, "productId", "id", "subscribeStockRefillAlert");
+            var email = TryGetStringVar(vars, "email") ?? string.Empty;
+            var cidStr = TryGetStringVar(vars, "customerId");
+            Guid? cid = Guid.TryParse(cidStr, out var parsedCid) ? parsedCid : null;
+            data["subscribeStockRefillAlert"] = await sender.SendCommandAsync<SubscribeStockRefillAlertCommand, StockRefillAlertDto>(
+                new SubscribeStockRefillAlertCommand(pid, email, cid), ct);
+        }
+
+        if (ContainsRootField(mutationText, "addFavoriteProduct"))
+        {
+            var cid = ParseRequiredGuid(vars, "customerId", "id", "addFavoriteProduct");
+            var pid = ParseRequiredGuid(vars, "productId", "productId", "addFavoriteProduct");
+            data["addFavoriteProduct"] = await sender.SendCommandAsync<AddManualFavoriteProductCommand, CustomerFavoriteProductDto>(
+                new AddManualFavoriteProductCommand(cid, pid), ct);
+        }
+
+        if (ContainsRootField(mutationText, "removeFavoriteProduct"))
+        {
+            var cid = ParseRequiredGuid(vars, "customerId", "id", "removeFavoriteProduct");
+            var pid = ParseRequiredGuid(vars, "productId", "productId", "removeFavoriteProduct");
+            data["removeFavoriteProduct"] = await sender.SendCommandAsync<RemoveManualFavoriteProductCommand, bool>(
+                new RemoveManualFavoriteProductCommand(cid, pid), ct);
+        }
+
+        if (ContainsRootField(mutationText, "addToWishlist"))
+        {
+            var cid = ParseRequiredGuid(vars, "customerId", "id", "addToWishlist");
+            var pid = ParseRequiredGuid(vars, "productId", "productId", "addToWishlist");
+            var note = TryGetStringVar(vars, "note");
+            var priority = TryGetIntVar(vars, "priority", 3);
+            data["addToWishlist"] = await sender.SendCommandAsync<AddProductToWishlistCommand, CustomerWishlistItemDto>(
+                new AddProductToWishlistCommand(cid, pid, note, priority), ct);
+        }
+
+        if (ContainsRootField(mutationText, "removeFromWishlist"))
+        {
+            var cid = ParseRequiredGuid(vars, "customerId", "id", "removeFromWishlist");
+            var pid = ParseRequiredGuid(vars, "productId", "productId", "removeFromWishlist");
+            data["removeFromWishlist"] = await sender.SendCommandAsync<RemoveProductFromWishlistCommand, bool>(
+                new RemoveProductFromWishlistCommand(cid, pid), ct);
+        }
+    }
+
+    private static Guid ParseRequiredGuid(Dictionary<string, JsonElement> vars, string primaryKey, string fallbackKey, string operationName)
+    {
+        var raw = TryGetStringVar(vars, primaryKey) ?? TryGetStringVar(vars, fallbackKey);
+        if (!Guid.TryParse(raw, out var parsed))
+        {
+            throw new ArgumentException($"Valid {primaryKey} variable is required for {operationName}.");
+        }
+
+        return parsed;
+    }
+
+    private static bool? TryGetNullableBoolVar(Dictionary<string, JsonElement> vars, string key) =>
+        vars.TryGetValue(key, out var el) && (el.ValueKind == JsonValueKind.True || el.ValueKind == JsonValueKind.False)
+            ? el.GetBoolean()
+            : null;
 
     private async Task<FederatedOrderNode> StitchOrderNodeAsync(PurchaseOrderDto order, CancellationToken ct)
     {

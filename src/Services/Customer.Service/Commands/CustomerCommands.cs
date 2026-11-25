@@ -66,3 +66,42 @@ public sealed record AssignTagToCustomerCommand(
 public sealed record RemoveTagFromCustomerCommand(
     Guid CustomerId,
     Guid TagId) : ICommand<B2BCustomerDto>;
+
+/// <summary>
+/// Pure Command data model to manually pin a Catalog Product as a Customer's Favorite Product.
+/// </summary>
+public sealed record AddManualFavoriteProductCommand(
+    Guid CustomerId,
+    Guid ProductId) : ICommand<CustomerFavoriteProductDto>;
+
+/// <summary>
+/// Pure Command data model to remove a manually pinned Favorite Product for a Customer.
+/// </summary>
+public sealed record RemoveManualFavoriteProductCommand(
+    Guid CustomerId,
+    Guid ProductId) : ICommand<bool>;
+
+/// <summary>
+/// Pure Command data model to add a Catalog Product to a Customer's personal Wishlist.
+/// </summary>
+public sealed record AddProductToWishlistCommand(
+    Guid CustomerId,
+    Guid ProductId,
+    string? Note = null,
+    int Priority = 3) : ICommand<CustomerWishlistItemDto>;
+
+/// <summary>
+/// Pure Command data model to update note/priority of a Wishlist item.
+/// </summary>
+public sealed record UpdateWishlistItemCommand(
+    Guid CustomerId,
+    Guid ProductId,
+    string? Note,
+    int Priority) : ICommand<CustomerWishlistItemDto>;
+
+/// <summary>
+/// Pure Command data model to remove a Catalog Product from a Customer's Wishlist.
+/// </summary>
+public sealed record RemoveProductFromWishlistCommand(
+    Guid CustomerId,
+    Guid ProductId) : ICommand<bool>;

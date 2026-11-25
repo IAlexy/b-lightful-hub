@@ -1,8 +1,11 @@
 using B2B.BuildingBlocks.Cqrs;
 using B2B.BuildingBlocks.Mapping;
 using B2B.BuildingBlocks.Messaging;
+using B2B.BuildingBlocks.Notifications;
 using B2B.GraphQL.Gateway.GraphQL;
 using Catalog.Service;
+using Catalog.Service.DataModels;
+using Catalog.Service.GraphQL;
 using Customer.Service;
 using Customer.Service.DataModels;
 using Customer.Service.GraphQL;
@@ -15,10 +18,11 @@ using Ordering.Service.GraphQL;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// 1. Register Core BuildingBlocks (CQRS Dispatcher, Compiled/Profile Object Mapper, Event Bus)
+// 1. Register Core BuildingBlocks (CQRS Dispatcher, Compiled/Profile Object Mapper, Event Bus, Email Notifications)
 builder.Services.AddSingleton<ISender, CqrsDispatcher>();
 builder.Services.AddSingleton<IB2BMapper, B2BMapper>();
 builder.Services.AddSingleton<IEventBus, InMemoryEventBus>();
+builder.Services.AddSingleton<IEmailNotificationService, InMemoryEmailNotificationService>();
 
 // 2. Register the 5 B2B Microservice Bounded Contexts
 builder.Services.AddCatalogMicroservice();
@@ -99,24 +103,459 @@ app.MapPost("/graphql", async ([FromBody] GraphQLRequest request, B2BFederatedGr
 .WithOpenApi();
 
 // ==========================================
-// 2. CATALOG MICROSERVICE REST ENDPOINTS
+// 2. CATALOG MICROSERVICE REST & GRAPHQL ENDPOINTS
 // ==========================================
 
-app.MapGet("/api/catalog/products", async ([FromQuery] string? category, ISender sender, CancellationToken ct) =>
+app.MapGet("/api/catalog/products", async (
+    [FromQuery] string? category,
+    [FromQuery] string? search,
+    [FromQuery] string? tag,
+    [FromQuery] bool? lowStockOnly,
+    [FromQuery] bool? inStockOnly,
+    [FromQuery] bool? includeArchived,
+    ISender sender,
+    CancellationToken ct) =>
 {
     var products = await sender.SendQueryAsync<GetCatalogProductsQuery, IReadOnlyList<CatalogProductDto>>(
-        new GetCatalogProductsQuery(category), ct);
+        new GetCatalogProductsQuery(category, search, tag, lowStockOnly, inStockOnly, includeArchived ?? false), ct);
     return Results.Ok(products);
 })
 .WithName("GetCatalogProducts")
 .WithOpenApi();
 
+app.MapGet("/api/catalog/products/{id:guid}", async (Guid id, [FromQuery] bool? includeArchived, ISender sender, CancellationToken ct) =>
+{
+    var product = await sender.SendQueryAsync<GetCatalogProductByIdQuery, CatalogProductDto?>(
+        new GetCatalogProductByIdQuery(id, includeArchived ?? true), ct);
+    return product is null
+        ? Results.NotFound(new { errorCode = "PRODUCT_NOT_FOUND", message = $"Catalog product {id} was not found." })
+        : Results.Ok(product);
+})
+.WithName("GetCatalogProductById")
+.WithOpenApi();
+
+app.MapGet("/api/catalog/products/sku/{sku}", async (string sku, [FromQuery] bool? includeArchived, ISender sender, CancellationToken ct) =>
+{
+    var product = await sender.SendQueryAsync<GetCatalogProductBySkuQuery, CatalogProductDto?>(
+        new GetCatalogProductBySkuQuery(sku, includeArchived ?? false), ct);
+    return product is null
+        ? Results.NotFound(new { errorCode = "PRODUCT_NOT_FOUND", message = $"Catalog product '{sku}' was not found." })
+        : Results.Ok(product);
+})
+.WithName("GetCatalogProductBySku")
+.WithOpenApi();
+
+app.MapGet("/api/catalog/products/sku/{sku}/availability", async (string sku, [FromQuery] int? quantity, ISender sender, CancellationToken ct) =>
+{
+    var check = await sender.SendQueryAsync<ValidateProductAvailabilityQuery, ProductAvailabilityCheckDto>(
+        new ValidateProductAvailabilityQuery(sku, quantity ?? 1), ct);
+    return Results.Ok(check);
+})
+.WithName("ValidateCatalogProductAvailability")
+.WithOpenApi();
+
 app.MapPost("/api/catalog/products", async ([FromBody] CreateCatalogProductCommand command, ISender sender, CancellationToken ct) =>
 {
-    var created = await sender.SendCommandAsync<CreateCatalogProductCommand, CatalogProductDto>(command, ct);
-    return Results.Created($"/api/catalog/products/{created.Sku}", created);
+    try
+    {
+        var created = await sender.SendCommandAsync<CreateCatalogProductCommand, CatalogProductDto>(command, ct);
+        return Results.Created($"/api/catalog/products/{created.Id}", created);
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode == "DUPLICATE_SKU")
+    {
+        return Results.Conflict(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode is "CATEGORY_NOT_FOUND" or "PRODUCT_TAG_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CatalogDomainException ex)
+    {
+        return Results.BadRequest(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
 })
 .WithName("CreateCatalogProduct")
+.WithOpenApi();
+
+app.MapPut("/api/catalog/products/{id:guid}", async (Guid id, [FromBody] UpdateCatalogProductCommand command, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var updated = await sender.SendCommandAsync<UpdateCatalogProductCommand, CatalogProductDto>(
+            command with { ProductId = id }, ct);
+        return Results.Ok(updated);
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode is "PRODUCT_NOT_FOUND" or "CATEGORY_NOT_FOUND" or "PRODUCT_TAG_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CatalogDomainException ex)
+    {
+        return Results.BadRequest(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("UpdateCatalogProduct")
+.WithOpenApi();
+
+app.MapDelete("/api/catalog/products/{id:guid}", async (Guid id, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var archived = await sender.SendCommandAsync<ArchiveCatalogProductCommand, CatalogProductDto>(
+            new ArchiveCatalogProductCommand(id), ct);
+        return Results.Ok(archived);
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode == "PRODUCT_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode == "PRODUCT_ARCHIVED")
+    {
+        return Results.Conflict(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("ArchiveCatalogProduct")
+.WithOpenApi();
+
+app.MapPost("/api/catalog/products/{id:guid}/unarchive", async (Guid id, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var restored = await sender.SendCommandAsync<UnarchiveCatalogProductCommand, CatalogProductDto>(
+            new UnarchiveCatalogProductCommand(id), ct);
+        return Results.Ok(restored);
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode == "PRODUCT_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode == "PRODUCT_NOT_ARCHIVED")
+    {
+        return Results.Conflict(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("UnarchiveCatalogProduct")
+.WithOpenApi();
+
+app.MapPut("/api/catalog/products/{id:guid}/volume-tiers", async (
+    Guid id,
+    [FromBody] IReadOnlyList<VolumePriceTierInput> tiers,
+    ISender sender,
+    CancellationToken ct) =>
+{
+    try
+    {
+        var updated = await sender.SendCommandAsync<SetProductVolumePriceTiersCommand, CatalogProductDto>(
+            new SetProductVolumePriceTiersCommand(id, tiers), ct);
+        return Results.Ok(updated);
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode == "PRODUCT_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CatalogDomainException ex)
+    {
+        return Results.BadRequest(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("SetProductVolumePriceTiers")
+.WithOpenApi();
+
+app.MapPost("/api/catalog/products/{id:guid}/restock", async (
+    Guid id,
+    [FromBody] RestockCatalogProductCommand command,
+    ISender sender,
+    CancellationToken ct) =>
+{
+    try
+    {
+        var result = await sender.SendCommandAsync<RestockCatalogProductCommand, RestockResultDto>(
+            command with { ProductId = id }, ct);
+        return Results.Ok(result);
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode == "PRODUCT_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode == "PRODUCT_ARCHIVED")
+    {
+        return Results.Conflict(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CatalogDomainException ex)
+    {
+        return Results.BadRequest(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("RestockCatalogProduct")
+.WithOpenApi();
+
+app.MapPatch("/api/catalog/products/{id:guid}/stock", async (
+    Guid id,
+    [FromBody] AdjustCatalogStockCommand command,
+    ISender sender,
+    CancellationToken ct) =>
+{
+    try
+    {
+        var result = await sender.SendCommandAsync<AdjustCatalogStockCommand, RestockResultDto>(
+            command with { ProductId = id }, ct);
+        return Results.Ok(result);
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode == "PRODUCT_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CatalogDomainException ex)
+    {
+        return Results.BadRequest(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("AdjustCatalogStock")
+.WithOpenApi();
+
+// Back-in-stock refill email alerts
+app.MapGet("/api/catalog/products/{id:guid}/refill-alerts", async (
+    Guid id,
+    [FromQuery] bool? pendingOnly,
+    ISender sender,
+    CancellationToken ct) =>
+{
+    try
+    {
+        var alerts = await sender.SendQueryAsync<GetProductRefillAlertsQuery, IReadOnlyList<StockRefillAlertDto>>(
+            new GetProductRefillAlertsQuery(id, pendingOnly ?? true), ct);
+        return Results.Ok(alerts);
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode == "PRODUCT_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("GetProductRefillAlerts")
+.WithOpenApi();
+
+app.MapPost("/api/catalog/products/{id:guid}/refill-alerts", async (
+    Guid id,
+    [FromBody] SubscribeStockRefillAlertCommand command,
+    ISender sender,
+    CancellationToken ct) =>
+{
+    try
+    {
+        var created = await sender.SendCommandAsync<SubscribeStockRefillAlertCommand, StockRefillAlertDto>(
+            command with { ProductId = id }, ct);
+        return Results.Created($"/api/catalog/refill-alerts/{created.Id}", created);
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode == "PRODUCT_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode is "PRODUCT_IN_STOCK" or "DUPLICATE_ALERT_SUBSCRIPTION" or "PRODUCT_ARCHIVED")
+    {
+        return Results.Conflict(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CatalogDomainException ex)
+    {
+        return Results.BadRequest(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("SubscribeStockRefillAlert")
+.WithOpenApi();
+
+app.MapDelete("/api/catalog/refill-alerts/{alertId:guid}", async (Guid alertId, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var deleted = await sender.SendCommandAsync<UnsubscribeStockRefillAlertCommand, bool>(
+            new UnsubscribeStockRefillAlertCommand(alertId), ct);
+        return Results.Ok(new { alertId, deleted });
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode == "ALERT_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("UnsubscribeStockRefillAlert")
+.WithOpenApi();
+
+// Relational Catalog Categories CRUD
+app.MapGet("/api/catalog/categories", async ([FromQuery] string? search, ISender sender, CancellationToken ct) =>
+{
+    var categories = await sender.SendQueryAsync<GetCatalogCategoriesQuery, IReadOnlyList<CatalogCategoryDto>>(
+        new GetCatalogCategoriesQuery(search), ct);
+    return Results.Ok(categories);
+})
+.WithName("GetCatalogCategories")
+.WithOpenApi();
+
+app.MapGet("/api/catalog/categories/{id:guid}", async (Guid id, ISender sender, CancellationToken ct) =>
+{
+    var category = await sender.SendQueryAsync<GetCatalogCategoryByIdQuery, CatalogCategoryDto?>(
+        new GetCatalogCategoryByIdQuery(id), ct);
+    return category is null
+        ? Results.NotFound(new { errorCode = "CATEGORY_NOT_FOUND", message = $"Catalog category {id} was not found." })
+        : Results.Ok(category);
+})
+.WithName("GetCatalogCategoryById")
+.WithOpenApi();
+
+app.MapPost("/api/catalog/categories", async ([FromBody] CreateCatalogCategoryCommand command, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var created = await sender.SendCommandAsync<CreateCatalogCategoryCommand, CatalogCategoryDto>(command, ct);
+        return Results.Created($"/api/catalog/categories/{created.Id}", created);
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode == "DUPLICATE_CATEGORY_NAME")
+    {
+        return Results.Conflict(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CatalogDomainException ex)
+    {
+        return Results.BadRequest(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("CreateCatalogCategory")
+.WithOpenApi();
+
+app.MapPut("/api/catalog/categories/{id:guid}", async (Guid id, [FromBody] UpdateCatalogCategoryCommand command, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var updated = await sender.SendCommandAsync<UpdateCatalogCategoryCommand, CatalogCategoryDto>(
+            command with { CategoryId = id }, ct);
+        return Results.Ok(updated);
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode == "CATEGORY_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode == "DUPLICATE_CATEGORY_NAME")
+    {
+        return Results.Conflict(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CatalogDomainException ex)
+    {
+        return Results.BadRequest(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("UpdateCatalogCategory")
+.WithOpenApi();
+
+app.MapDelete("/api/catalog/categories/{id:guid}", async (Guid id, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var deleted = await sender.SendCommandAsync<DeleteCatalogCategoryCommand, bool>(
+            new DeleteCatalogCategoryCommand(id), ct);
+        return Results.Ok(new { categoryId = id, deleted });
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode == "CATEGORY_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode == "CATEGORY_IN_USE")
+    {
+        return Results.Conflict(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("DeleteCatalogCategory")
+.WithOpenApi();
+
+// Independent Product Tags CRUD & Product <-> Tag Associations (3-table pattern)
+app.MapGet("/api/catalog/tags", async ([FromQuery] string? search, ISender sender, CancellationToken ct) =>
+{
+    var tags = await sender.SendQueryAsync<GetProductTagsQuery, IReadOnlyList<ProductTagDto>>(
+        new GetProductTagsQuery(search), ct);
+    return Results.Ok(tags);
+})
+.WithName("GetProductTags")
+.WithOpenApi();
+
+app.MapGet("/api/catalog/tags/{tagId:guid}", async (Guid tagId, ISender sender, CancellationToken ct) =>
+{
+    var tag = await sender.SendQueryAsync<GetProductTagByIdQuery, ProductTagDto?>(
+        new GetProductTagByIdQuery(tagId), ct);
+    return tag is null
+        ? Results.NotFound(new { errorCode = "PRODUCT_TAG_NOT_FOUND", message = $"Product tag {tagId} was not found." })
+        : Results.Ok(tag);
+})
+.WithName("GetProductTagById")
+.WithOpenApi();
+
+app.MapPost("/api/catalog/tags", async ([FromBody] CreateProductTagCommand command, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var created = await sender.SendCommandAsync<CreateProductTagCommand, ProductTagDto>(command, ct);
+        return Results.Created($"/api/catalog/tags/{created.Id}", created);
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode == "DUPLICATE_PRODUCT_TAG_NAME")
+    {
+        return Results.Conflict(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CatalogDomainException ex)
+    {
+        return Results.BadRequest(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("CreateProductTag")
+.WithOpenApi();
+
+app.MapDelete("/api/catalog/tags/{tagId:guid}", async (Guid tagId, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var deleted = await sender.SendCommandAsync<DeleteProductTagCommand, bool>(
+            new DeleteProductTagCommand(tagId), ct);
+        return Results.Ok(new { tagId, deleted });
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode == "PRODUCT_TAG_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("DeleteProductTag")
+.WithOpenApi();
+
+app.MapPost("/api/catalog/products/{productId:guid}/tags/{tagId:guid}", async (Guid productId, Guid tagId, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var updated = await sender.SendCommandAsync<AssignTagToProductCommand, CatalogProductDto>(
+            new AssignTagToProductCommand(productId, tagId), ct);
+        return Results.Ok(updated);
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode is "PRODUCT_NOT_FOUND" or "PRODUCT_TAG_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("AssignTagToProduct")
+.WithOpenApi();
+
+app.MapDelete("/api/catalog/products/{productId:guid}/tags/{tagId:guid}", async (Guid productId, Guid tagId, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var updated = await sender.SendCommandAsync<RemoveTagFromProductCommand, CatalogProductDto>(
+            new RemoveTagFromProductCommand(productId, tagId), ct);
+        return Results.Ok(updated);
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode is "PRODUCT_NOT_FOUND" or "PRODUCT_TAG_ASSIGNMENT_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("RemoveTagFromProduct")
+.WithOpenApi();
+
+app.MapPost("/api/catalog/graphql", async ([FromBody] CatalogGraphQLRequest request, CatalogGraphQLResolver resolver, CancellationToken ct) =>
+{
+    var response = await resolver.ExecuteAsync(request, ct);
+    return Results.Ok(response);
+})
+.WithName("ExecuteCatalogSubgraphGraphQL")
 .WithOpenApi();
 
 // ==========================================
@@ -342,14 +781,120 @@ app.MapGet("/api/customers/{id:guid}/favorite-products", async (Guid id, ISender
     {
         return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
     }
-    catch (CustomerFavoriteProductsNotImplementedException ex)
-    {
-        return Results.Json(
-            new { errorCode = ex.ErrorCode, customerId = ex.CustomerId, message = ex.Message },
-            statusCode: StatusCodes.Status501NotImplemented);
-    }
 })
 .WithName("GetCustomerFavoriteProducts")
+.WithOpenApi();
+
+app.MapPost("/api/customers/{id:guid}/favorite-products/{productId:guid}", async (Guid id, Guid productId, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var favorite = await sender.SendCommandAsync<AddManualFavoriteProductCommand, CustomerFavoriteProductDto>(
+            new AddManualFavoriteProductCommand(id, productId), ct);
+        return Results.Created($"/api/customers/{id}/favorite-products", favorite);
+    }
+    catch (CustomerDomainException ex) when (ex.ErrorCode is "CUSTOMER_NOT_FOUND" or "PRODUCT_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CustomerDomainException ex) when (ex.ErrorCode is "DUPLICATE_FAVORITE" or "PRODUCT_ARCHIVED")
+    {
+        return Results.Conflict(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("AddManualFavoriteProduct")
+.WithOpenApi();
+
+app.MapDelete("/api/customers/{id:guid}/favorite-products/{productId:guid}", async (Guid id, Guid productId, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var removed = await sender.SendCommandAsync<RemoveManualFavoriteProductCommand, bool>(
+            new RemoveManualFavoriteProductCommand(id, productId), ct);
+        return Results.Ok(new { customerId = id, productId, removed });
+    }
+    catch (CustomerDomainException ex) when (ex.ErrorCode is "CUSTOMER_NOT_FOUND" or "FAVORITE_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("RemoveManualFavoriteProduct")
+.WithOpenApi();
+
+app.MapGet("/api/customers/{id:guid}/wishlist", async (Guid id, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var wishlist = await sender.SendQueryAsync<GetCustomerWishlistQuery, IReadOnlyList<CustomerWishlistItemDto>>(
+            new GetCustomerWishlistQuery(id), ct);
+        return Results.Ok(wishlist);
+    }
+    catch (CustomerDomainException ex) when (ex.ErrorCode == "CUSTOMER_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("GetCustomerWishlist")
+.WithOpenApi();
+
+app.MapPost("/api/customers/{id:guid}/wishlist", async (Guid id, [FromBody] AddProductToWishlistCommand command, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var created = await sender.SendCommandAsync<AddProductToWishlistCommand, CustomerWishlistItemDto>(
+            command with { CustomerId = id }, ct);
+        return Results.Created($"/api/customers/{id}/wishlist", created);
+    }
+    catch (CustomerDomainException ex) when (ex.ErrorCode is "CUSTOMER_NOT_FOUND" or "PRODUCT_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CustomerDomainException ex) when (ex.ErrorCode is "DUPLICATE_WISHLIST_ITEM" or "PRODUCT_ARCHIVED")
+    {
+        return Results.Conflict(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CustomerDomainException ex)
+    {
+        return Results.BadRequest(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("AddProductToWishlist")
+.WithOpenApi();
+
+app.MapPut("/api/customers/{id:guid}/wishlist/{productId:guid}", async (Guid id, Guid productId, [FromBody] UpdateWishlistItemCommand command, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var updated = await sender.SendCommandAsync<UpdateWishlistItemCommand, CustomerWishlistItemDto>(
+            command with { CustomerId = id, ProductId = productId }, ct);
+        return Results.Ok(updated);
+    }
+    catch (CustomerDomainException ex) when (ex.ErrorCode is "CUSTOMER_NOT_FOUND" or "WISHLIST_ITEM_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CustomerDomainException ex)
+    {
+        return Results.BadRequest(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("UpdateWishlistItem")
+.WithOpenApi();
+
+app.MapDelete("/api/customers/{id:guid}/wishlist/{productId:guid}", async (Guid id, Guid productId, ISender sender, CancellationToken ct) =>
+{
+    try
+    {
+        var removed = await sender.SendCommandAsync<RemoveProductFromWishlistCommand, bool>(
+            new RemoveProductFromWishlistCommand(id, productId), ct);
+        return Results.Ok(new { customerId = id, productId, removed });
+    }
+    catch (CustomerDomainException ex) when (ex.ErrorCode is "CUSTOMER_NOT_FOUND" or "WISHLIST_ITEM_NOT_FOUND")
+    {
+        return Results.NotFound(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+})
+.WithName("RemoveProductFromWishlist")
 .WithOpenApi();
 
 app.MapPost("/api/customers/graphql", async ([FromBody] CustomerGraphQLRequest request, CustomerGraphQLResolver resolver, CancellationToken ct) =>
@@ -384,8 +929,19 @@ app.MapGet("/api/ordering/orders/{id:guid}", async (Guid id, ISender sender, Can
 
 app.MapPost("/api/ordering/orders", async ([FromBody] CreatePurchaseOrderCommand command, ISender sender, CancellationToken ct) =>
 {
-    var created = await sender.SendCommandAsync<CreatePurchaseOrderCommand, PurchaseOrderDto>(command, ct);
-    return Results.Created($"/api/ordering/orders/{created.Id}", created);
+    try
+    {
+        var created = await sender.SendCommandAsync<CreatePurchaseOrderCommand, PurchaseOrderDto>(command, ct);
+        return Results.Created($"/api/ordering/orders/{created.Id}", created);
+    }
+    catch (CatalogDomainException ex) when (ex.ErrorCode is "OUT_OF_STOCK" or "INSUFFICIENT_STOCK" or "PRODUCT_ARCHIVED")
+    {
+        return Results.Conflict(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
+    catch (CatalogDomainException ex)
+    {
+        return Results.BadRequest(new { errorCode = ex.ErrorCode, message = ex.Message });
+    }
 })
 .WithName("CreatePurchaseOrder")
 .WithOpenApi();

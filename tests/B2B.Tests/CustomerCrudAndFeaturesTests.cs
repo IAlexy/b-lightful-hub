@@ -258,7 +258,7 @@ public class CustomerCrudAndFeaturesTests
     // =========================================================================
 
     [Fact]
-    public async Task CustomerCrossServiceQueries_RetrieveOrders_Invoices_Deliveries_AndThrowNotImplementedForFavoriteProducts()
+    public async Task CustomerCrossServiceQueries_RetrieveOrders_Invoices_Deliveries_AndCatalogBackedFavoriteProducts()
     {
         using var provider = BuildTestProvider();
         var sender = provider.GetRequiredService<ISender>();
@@ -306,14 +306,16 @@ public class CustomerCrudAndFeaturesTests
         Assert.Equal(2, deliveries.Count);
         Assert.All(deliveries, d => Assert.Equal(customer.DeliveryAddress, d.DestinationAddress));
 
-        // 4. Retrieve Favorite Products -> throws CustomerFavoriteProductsNotImplementedException (NotImplementedException)
-        var favEx = await Assert.ThrowsAsync<CustomerFavoriteProductsNotImplementedException>(() =>
-            sender.SendQueryAsync<GetCustomerFavoriteProductsQuery, IReadOnlyList<CustomerFavoriteProductDto>>(
-                new GetCustomerFavoriteProductsQuery(customer.Id)));
+        // 4. Retrieve Catalog-backed Favorite Products -> returns ordered SKUs enriched with live Catalog data
+        var favorites = await sender.SendQueryAsync<GetCustomerFavoriteProductsQuery, IReadOnlyList<CustomerFavoriteProductDto>>(
+            new GetCustomerFavoriteProductsQuery(customer.Id));
 
-        Assert.Equal("CATALOG_FAVORITE_PRODUCTS_NOT_IMPLEMENTED", favEx.ErrorCode);
-        Assert.Equal(customer.Id, favEx.CustomerId);
-        Assert.Contains("not implemented yet", favEx.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(2, favorites.Count);
+        var rackFav = Assert.Single(favorites, f => f.Sku == "SRV-RACK-42U");
+        Assert.Equal(1, rackFav.OrderFrequency);
+        Assert.Equal(5, rackFav.TotalUnitsOrdered);
+        Assert.Equal("Datacenter Infrastructure", rackFav.Category);
+        Assert.Equal(35, rackFav.AvailableStock);
     }
 
     // =========================================================================
@@ -321,7 +323,7 @@ public class CustomerCrudAndFeaturesTests
     // =========================================================================
 
     [Fact]
-    public async Task CustomerRestAndGraphQLEndpoints_SupportIndependentTags_ContactRule_FullCrud_360Views_And501FavoriteProducts()
+    public async Task CustomerRestAndGraphQLEndpoints_SupportIndependentTags_ContactRule_FullCrud_360Views_AndFavoriteProducts()
     {
         await using var factory = new WebApplicationFactory<Program>();
         using var client = factory.CreateClient();
@@ -394,11 +396,15 @@ public class CustomerCrudAndFeaturesTests
         Assert.Single(invoices);
         Assert.Single(deliveries);
 
-        // 7. GET /api/customers/{id}/favorite-products -> 501 Not Implemented
+        // 7. GET /api/customers/{id}/favorite-products -> 200 OK with Catalog-backed favorites
         var favResp = await client.GetAsync($"/api/customers/{createdCustomer.Id}/favorite-products");
-        Assert.Equal(HttpStatusCode.NotImplemented, favResp.StatusCode);
-        var favJson = await favResp.Content.ReadAsStringAsync();
-        Assert.Contains("CATALOG_FAVORITE_PRODUCTS_NOT_IMPLEMENTED", favJson);
+        Assert.Equal(HttpStatusCode.OK, favResp.StatusCode);
+        var favorites = await favResp.Content.ReadFromJsonAsync<List<CustomerFavoriteProductDto>>();
+        Assert.NotNull(favorites);
+        Assert.Single(favorites);
+        Assert.Equal("UPS-LI-10KVA", favorites[0].Sku);
+        Assert.Equal(1, favorites[0].OrderFrequency);
+        Assert.Equal(4, favorites[0].TotalUnitsOrdered);
 
         // 8. Unassign the tag from the customer via DELETE /api/customers/{id}/tags/{tagId}
         var unassignResp = await client.DeleteAsync($"/api/customers/{createdCustomer.Id}/tags/{independentTag.Id}");

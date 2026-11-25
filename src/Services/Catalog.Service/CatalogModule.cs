@@ -1,50 +1,23 @@
 namespace Catalog.Service;
 
-using System.Collections.Concurrent;
+using AutoMapper;
 using B2B.BuildingBlocks.Cqrs;
 using B2B.BuildingBlocks.Mapping;
 using B2B.BuildingBlocks.Messaging;
+using B2B.BuildingBlocks.Notifications;
+using Catalog.Service.GraphQL;
+using Catalog.Service.Handlers;
+using Catalog.Service.Mapping;
+using Catalog.Service.Persistence;
+using Catalog.Service.Services;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
-// ==========================================
-// 1. DOMAIN ENTITY & DTOs
-// ==========================================
-
-public sealed class CatalogProduct
-{
-    public Guid Id { get; init; } = Guid.NewGuid();
-    public required string Sku { get; init; }
-    public required string Name { get; set; }
-    public required string Category { get; set; }
-    public decimal UnitPriceHt { get; set; }
-    public int BulkTierMinQuantity { get; set; } = 10;
-    public decimal BulkUnitPriceHt { get; set; }
-    public int AvailableStock { get; set; }
-    public int ReservedStock { get; set; }
-    public double UnitWeightKg { get; set; } = 2.5;
-
-    public decimal ComputeEffectiveUnitPrice(int quantity) =>
-        quantity >= BulkTierMinQuantity && BulkUnitPriceHt > 0 ? BulkUnitPriceHt : UnitPriceHt;
-}
-
-public sealed record CatalogProductDto(
-    Guid Id,
-    string Sku,
-    string Name,
-    string Category,
-    decimal UnitPriceHt,
-    int BulkTierMinQuantity,
-    decimal BulkUnitPriceHt,
-    decimal BulkDiscountPercent,
-    int AvailableStock,
-    int ReservedStock,
-    double UnitWeightKg,
-    bool IsLowStock);
-
-// ==========================================
-// 2. STRONGLY-TYPED MAPPER PROFILE
-// ==========================================
-
+/// <summary>
+/// Strongly-typed IB2BMapper profile preserved for backwards compatibility with B2BMapper tests.
+/// </summary>
 public sealed class CatalogProductToDtoProfile : IMapProfile<CatalogProduct, CatalogProductDto>
 {
     public CatalogProductDto Map(CatalogProduct source)
@@ -66,200 +39,89 @@ public sealed class CatalogProductToDtoProfile : IMapProfile<CatalogProduct, Cat
             source.AvailableStock,
             source.ReservedStock,
             source.UnitWeightKg,
-            IsLowStock: source.AvailableStock < 15);
-    }
-}
-
-// ==========================================
-// 3. IN-MEMORY MICROSERVICE STORE
-// ==========================================
-
-public sealed class CatalogDataStore
-{
-    public ConcurrentDictionary<string, CatalogProduct> ProductsBySku { get; } = new(StringComparer.OrdinalIgnoreCase);
-
-    public CatalogDataStore()
-    {
-        Seed();
-    }
-
-    private void Seed()
-    {
-        var initial = new[]
-        {
-            new CatalogProduct
-            {
-                Sku = "SRV-RACK-42U",
-                Name = "Baie Serveur Haute Densité 42U refroidissement liquide",
-                Category = "Datacenter Infrastructure",
-                UnitPriceHt = 2400m,
-                BulkTierMinQuantity = 5,
-                BulkUnitPriceHt = 2040m,
-                AvailableStock = 40,
-                ReservedStock = 2,
-                UnitWeightKg = 85.0
-            },
-            new CatalogProduct
-            {
-                Sku = "SW-FIBER-100G",
-                Name = "Switch Fibre Optique 100GbE 32 Ports L3",
-                Category = "Networking",
-                UnitPriceHt = 4800m,
-                BulkTierMinQuantity = 4,
-                BulkUnitPriceHt = 4200m,
-                AvailableStock = 28,
-                ReservedStock = 0,
-                UnitWeightKg = 9.5
-            },
-            new CatalogProduct
-            {
-                Sku = "UPS-LFP-10KVA",
-                Name = "Onduleur Industriel LiFePO4 10kVA Double Conversion",
-                Category = "Power & Energy",
-                UnitPriceHt = 1950m,
-                BulkTierMinQuantity = 6,
-                BulkUnitPriceHt = 1650m,
-                AvailableStock = 12,
-                ReservedStock = 1,
-                UnitWeightKg = 42.0
-            }
-        };
-
-        foreach (var p in initial)
-        {
-            ProductsBySku[p.Sku] = p;
-        }
-    }
-}
-
-// ==========================================
-// 4. CQRS COMMANDS, QUERIES & HANDLERS
-// ==========================================
-
-public sealed record CreateCatalogProductCommand(
-    string Sku,
-    string Name,
-    string Category,
-    decimal UnitPriceHt,
-    int BulkTierMinQuantity,
-    decimal BulkUnitPriceHt,
-    int InitialStock,
-    double UnitWeightKg) : ICommand<CatalogProductDto>;
-
-public sealed class CreateCatalogProductCommandHandler(
-    CatalogDataStore store,
-    IB2BMapper mapper) : ICommandHandler<CreateCatalogProductCommand, CatalogProductDto>
-{
-    public Task<CatalogProductDto> HandleAsync(CreateCatalogProductCommand command, CancellationToken ct = default)
-    {
-        if (string.IsNullOrWhiteSpace(command.Sku))
-        {
-            throw new ArgumentException("SKU is required.", nameof(command));
-        }
-
-        var product = new CatalogProduct
-        {
-            Sku = command.Sku.Trim().ToUpperInvariant(),
-            Name = command.Name,
-            Category = command.Category,
-            UnitPriceHt = command.UnitPriceHt,
-            BulkTierMinQuantity = command.BulkTierMinQuantity,
-            BulkUnitPriceHt = command.BulkUnitPriceHt,
-            AvailableStock = command.InitialStock,
-            UnitWeightKg = command.UnitWeightKg
-        };
-
-        store.ProductsBySku[product.Sku] = product;
-        return Task.FromResult(mapper.Map<CatalogProduct, CatalogProductDto>(product));
-    }
-}
-
-public sealed record ReserveCatalogStockCommand(string Sku, int Quantity) : ICommand<CatalogProductDto?>;
-
-public sealed class ReserveCatalogStockCommandHandler(
-    CatalogDataStore store,
-    IB2BMapper mapper) : ICommandHandler<ReserveCatalogStockCommand, CatalogProductDto?>
-{
-    public Task<CatalogProductDto?> HandleAsync(ReserveCatalogStockCommand command, CancellationToken ct = default)
-    {
-        if (!store.ProductsBySku.TryGetValue(command.Sku, out var product))
-        {
-            return Task.FromResult<CatalogProductDto?>(null);
-        }
-
-        var qty = Math.Max(0, command.Quantity);
-        var reserved = Math.Min(product.AvailableStock, qty);
-        product.AvailableStock -= reserved;
-        product.ReservedStock += reserved;
-
-        return Task.FromResult<CatalogProductDto?>(mapper.Map<CatalogProduct, CatalogProductDto>(product));
-    }
-}
-
-public sealed record GetCatalogProductsQuery(string? Category = null) : IQuery<IReadOnlyList<CatalogProductDto>>;
-
-public sealed class GetCatalogProductsQueryHandler(
-    CatalogDataStore store,
-    IB2BMapper mapper) : IQueryHandler<GetCatalogProductsQuery, IReadOnlyList<CatalogProductDto>>
-{
-    public Task<IReadOnlyList<CatalogProductDto>> HandleAsync(GetCatalogProductsQuery query, CancellationToken ct = default)
-    {
-        var items = store.ProductsBySku.Values.AsEnumerable();
-        if (!string.IsNullOrWhiteSpace(query.Category))
-        {
-            items = items.Where(p => string.Equals(p.Category, query.Category, StringComparison.OrdinalIgnoreCase));
-        }
-
-        var ordered = items.OrderBy(p => p.Sku).ToList();
-        return Task.FromResult(mapper.MapList<CatalogProduct, CatalogProductDto>(ordered));
-    }
-}
-
-public sealed record GetCatalogProductBySkuQuery(string Sku) : IQuery<CatalogProductDto?>;
-
-public sealed class GetCatalogProductBySkuQueryHandler(
-    CatalogDataStore store,
-    IB2BMapper mapper) : IQueryHandler<GetCatalogProductBySkuQuery, CatalogProductDto?>
-{
-    public Task<CatalogProductDto?> HandleAsync(GetCatalogProductBySkuQuery query, CancellationToken ct = default)
-    {
-        if (store.ProductsBySku.TryGetValue(query.Sku, out var product))
-        {
-            return Task.FromResult<CatalogProductDto?>(mapper.Map<CatalogProduct, CatalogProductDto>(product));
-        }
-
-        return Task.FromResult<CatalogProductDto?>(null);
-    }
-}
-
-// ==========================================
-// 5. INTEGRATION EVENT HANDLER (SAGA)
-// ==========================================
-
-public sealed class OrderConfirmedCatalogStockHandler(ISender sender)
-    : IIntegrationEventHandler<OrderConfirmedIntegrationEvent>
-{
-    public async Task HandleAsync(OrderConfirmedIntegrationEvent integrationEvent, CancellationToken ct = default)
-    {
-        foreach (var line in integrationEvent.Lines)
-        {
-            await sender.SendCommandAsync<ReserveCatalogStockCommand, CatalogProductDto?>(
-                new ReserveCatalogStockCommand(line.Sku, line.Quantity), ct);
-        }
+            IsLowStock: source.AvailableStock < 15,
+            IsOutOfStock: source.AvailableStock <= 0,
+            CanBeOrdered: source.AvailableStock > 0);
     }
 }
 
 public static class CatalogServiceRegistration
 {
-    public static IServiceCollection AddCatalogMicroservice(this IServiceCollection services)
+    public static IServiceCollection AddCatalogMicroservice(
+        this IServiceCollection services,
+        string? sqliteConnectionString = null)
     {
-        services.AddSingleton<CatalogDataStore>();
+        // Ensure a shared email notification service exists even in isolated unit test containers
+        services.TryAddSingleton<IEmailNotificationService, InMemoryEmailNotificationService>();
+
+        // Register AutoMapper with CatalogAutoMapperProfile & legacy IB2BMapper profile
+        services.AddAutoMapper(new CatalogAutoMapperProfile());
         services.AddSingleton<IMapProfile<CatalogProduct, CatalogProductDto>, CatalogProductToDtoProfile>();
+
+        // Register EF Core CatalogDbContext backed by SQLite relational engine (6 tables)
+        var connString = string.IsNullOrWhiteSpace(sqliteConnectionString)
+            ? $"DataSource=catalog_{Guid.NewGuid():N};Mode=Memory;Cache=Shared"
+            : sqliteConnectionString;
+
+        var keepAliveConnection = new SqliteConnection(connString);
+        keepAliveConnection.Open();
+        services.AddSingleton(keepAliveConnection);
+
+        services.AddDbContext<CatalogDbContext>(options =>
+            options.UseSqlite(keepAliveConnection),
+            contextLifetime: ServiceLifetime.Transient,
+            optionsLifetime: ServiceLifetime.Singleton);
+
+        // Ensure relational schema is created and default B2B catalog products/categories/tiers are seeded
+        using (var tempProvider = services.BuildServiceProvider())
+        using (var db = tempProvider.GetRequiredService<CatalogDbContext>())
+        {
+            db.Database.EnsureCreated();
+            CatalogCrudService.SeedDefaultCatalog(db);
+        }
+
+        // Register Catalog Service
+        services.AddTransient<ICatalogService, CatalogCrudService>();
+
+        // Command Handlers
         services.AddTransient<ICommandHandler<CreateCatalogProductCommand, CatalogProductDto>, CreateCatalogProductCommandHandler>();
+        services.AddTransient<ICommandHandler<UpdateCatalogProductCommand, CatalogProductDto>, UpdateCatalogProductCommandHandler>();
+        services.AddTransient<ICommandHandler<ArchiveCatalogProductCommand, CatalogProductDto>, ArchiveCatalogProductCommandHandler>();
+        services.AddTransient<ICommandHandler<UnarchiveCatalogProductCommand, CatalogProductDto>, UnarchiveCatalogProductCommandHandler>();
+        services.AddTransient<ICommandHandler<CreateCatalogCategoryCommand, CatalogCategoryDto>, CreateCatalogCategoryCommandHandler>();
+        services.AddTransient<ICommandHandler<UpdateCatalogCategoryCommand, CatalogCategoryDto>, UpdateCatalogCategoryCommandHandler>();
+        services.AddTransient<ICommandHandler<DeleteCatalogCategoryCommand, bool>, DeleteCatalogCategoryCommandHandler>();
+        services.AddTransient<ICommandHandler<CreateProductTagCommand, ProductTagDto>, CreateProductTagCommandHandler>();
+        services.AddTransient<ICommandHandler<DeleteProductTagCommand, bool>, DeleteProductTagCommandHandler>();
+        services.AddTransient<ICommandHandler<AssignTagToProductCommand, CatalogProductDto>, AssignTagToProductCommandHandler>();
+        services.AddTransient<ICommandHandler<RemoveTagFromProductCommand, CatalogProductDto>, RemoveTagFromProductCommandHandler>();
+        services.AddTransient<ICommandHandler<SetProductVolumePriceTiersCommand, CatalogProductDto>, SetProductVolumePriceTiersCommandHandler>();
         services.AddTransient<ICommandHandler<ReserveCatalogStockCommand, CatalogProductDto?>, ReserveCatalogStockCommandHandler>();
+        services.AddTransient<ICommandHandler<ReleaseCatalogStockCommand, CatalogProductDto?>, ReleaseCatalogStockCommandHandler>();
+        services.AddTransient<ICommandHandler<RestockCatalogProductCommand, RestockResultDto>, RestockCatalogProductCommandHandler>();
+        services.AddTransient<ICommandHandler<AdjustCatalogStockCommand, RestockResultDto>, AdjustCatalogStockCommandHandler>();
+        services.AddTransient<ICommandHandler<SubscribeStockRefillAlertCommand, StockRefillAlertDto>, SubscribeStockRefillAlertCommandHandler>();
+        services.AddTransient<ICommandHandler<UnsubscribeStockRefillAlertCommand, bool>, UnsubscribeStockRefillAlertCommandHandler>();
+
+        // Query Handlers
         services.AddTransient<IQueryHandler<GetCatalogProductsQuery, IReadOnlyList<CatalogProductDto>>, GetCatalogProductsQueryHandler>();
+        services.AddTransient<IQueryHandler<GetCatalogProductByIdQuery, CatalogProductDto?>, GetCatalogProductByIdQueryHandler>();
         services.AddTransient<IQueryHandler<GetCatalogProductBySkuQuery, CatalogProductDto?>, GetCatalogProductBySkuQueryHandler>();
+        services.AddTransient<IQueryHandler<ValidateProductAvailabilityQuery, ProductAvailabilityCheckDto>, ValidateProductAvailabilityQueryHandler>();
+        services.AddTransient<IQueryHandler<GetCatalogCategoriesQuery, IReadOnlyList<CatalogCategoryDto>>, GetCatalogCategoriesQueryHandler>();
+        services.AddTransient<IQueryHandler<GetCatalogCategoryByIdQuery, CatalogCategoryDto?>, GetCatalogCategoryByIdQueryHandler>();
+        services.AddTransient<IQueryHandler<GetProductTagsQuery, IReadOnlyList<ProductTagDto>>, GetProductTagsQueryHandler>();
+        services.AddTransient<IQueryHandler<GetProductTagByIdQuery, ProductTagDto?>, GetProductTagByIdQueryHandler>();
+        services.AddTransient<IQueryHandler<GetProductRefillAlertsQuery, IReadOnlyList<StockRefillAlertDto>>, GetProductRefillAlertsQueryHandler>();
+
+        // Integration Event Handlers (Saga: Reserve on Confirm, Release on Cancel/LineCancel)
         services.AddTransient<IIntegrationEventHandler<OrderConfirmedIntegrationEvent>, OrderConfirmedCatalogStockHandler>();
+        services.AddTransient<IIntegrationEventHandler<OrderCancelledIntegrationEvent>, OrderCancelledCatalogStockHandler>();
+        services.AddTransient<IIntegrationEventHandler<OrderLineCancelledIntegrationEvent>, OrderLineCancelledCatalogStockHandler>();
+
+        // GraphQL Subgraph Resolver
+        services.AddTransient<CatalogGraphQLResolver>();
+
         return services;
     }
 }

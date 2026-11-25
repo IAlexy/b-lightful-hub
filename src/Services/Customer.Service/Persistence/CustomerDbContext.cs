@@ -14,6 +14,8 @@ public class CustomerDbContext(DbContextOptions<CustomerDbContext> options) : Db
     public DbSet<CustomerProfileEntity> Customers => Set<CustomerProfileEntity>();
     public DbSet<CustomTagEntity> CustomTags => Set<CustomTagEntity>();
     public DbSet<CustomerTagAssignmentEntity> CustomerTagAssignments => Set<CustomerTagAssignmentEntity>();
+    public DbSet<CustomerManualFavoriteEntity> ManualFavorites => Set<CustomerManualFavoriteEntity>();
+    public DbSet<CustomerWishlistItemEntity> WishlistItems => Set<CustomerWishlistItemEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -58,6 +60,36 @@ public class CustomerDbContext(DbContextOptions<CustomerDbContext> options) : Db
             entity.HasOne(a => a.Tag)
                   .WithMany(t => t.CustomerAssignments)
                   .HasForeignKey(a => a.TagId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // 4. Table 4: "CustomerManualFavorites"
+        modelBuilder.Entity<CustomerManualFavoriteEntity>(entity =>
+        {
+            entity.ToTable("CustomerManualFavorites");
+            entity.HasKey(f => new { f.CustomerId, f.ProductId });
+            entity.Property(f => f.Sku).IsRequired().HasMaxLength(64);
+
+            entity.HasOne(f => f.Customer)
+                  .WithMany(c => c.ManualFavorites)
+                  .HasForeignKey(f => f.CustomerId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // 5. Table 5: "CustomerWishlistItems"
+        modelBuilder.Entity<CustomerWishlistItemEntity>(entity =>
+        {
+            entity.ToTable("CustomerWishlistItems");
+            entity.HasKey(w => w.Id);
+            entity.Property(w => w.Sku).IsRequired().HasMaxLength(64);
+            entity.Property(w => w.Note).HasMaxLength(400);
+            entity.HasIndex(w => new { w.CustomerId, w.ProductId })
+                  .IsUnique()
+                  .HasDatabaseName("IX_CustomerWishlistItems_Customer_Product");
+
+            entity.HasOne(w => w.Customer)
+                  .WithMany(c => c.WishlistItems)
+                  .HasForeignKey(w => w.CustomerId)
                   .OnDelete(DeleteBehavior.Cascade);
         });
     }

@@ -73,3 +73,38 @@ public sealed class RemoveTagFromCustomerCommandHandler(
         return customerService.RemoveTagFromCustomerAsync(assignmentModel, ct);
     }
 }
+
+public sealed class AddManualFavoriteProductCommandHandler(
+    ICustomerService customerService) : ICommandHandler<AddManualFavoriteProductCommand, CustomerFavoriteProductDto>
+{
+    public Task<CustomerFavoriteProductDto> HandleAsync(AddManualFavoriteProductCommand command, CancellationToken ct = default) =>
+        customerService.AddManualFavoriteProductAsync(command.CustomerId, command.ProductId, ct);
+}
+
+public sealed class RemoveManualFavoriteProductCommandHandler(
+    ICustomerService customerService) : ICommandHandler<RemoveManualFavoriteProductCommand, bool>
+{
+    public Task<bool> HandleAsync(RemoveManualFavoriteProductCommand command, CancellationToken ct = default) =>
+        customerService.RemoveManualFavoriteProductAsync(command.CustomerId, command.ProductId, ct);
+}
+
+public sealed class AddProductToWishlistCommandHandler(
+    ICustomerService customerService) : ICommandHandler<AddProductToWishlistCommand, CustomerWishlistItemDto>
+{
+    public Task<CustomerWishlistItemDto> HandleAsync(AddProductToWishlistCommand command, CancellationToken ct = default) =>
+        customerService.AddProductToWishlistAsync(command.CustomerId, command.ProductId, command.Note, command.Priority, ct);
+}
+
+public sealed class UpdateWishlistItemCommandHandler(
+    ICustomerService customerService) : ICommandHandler<UpdateWishlistItemCommand, CustomerWishlistItemDto>
+{
+    public Task<CustomerWishlistItemDto> HandleAsync(UpdateWishlistItemCommand command, CancellationToken ct = default) =>
+        customerService.UpdateWishlistItemAsync(command.CustomerId, command.ProductId, command.Note, command.Priority, ct);
+}
+
+public sealed class RemoveProductFromWishlistCommandHandler(
+    ICustomerService customerService) : ICommandHandler<RemoveProductFromWishlistCommand, bool>
+{
+    public Task<bool> HandleAsync(RemoveProductFromWishlistCommand command, CancellationToken ct = default) =>
+        customerService.RemoveProductFromWishlistAsync(command.CustomerId, command.ProductId, ct);
+}

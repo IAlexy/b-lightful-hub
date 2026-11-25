@@ -2,6 +2,8 @@ namespace Customer.Service.Services;
 
 using AutoMapper;
 using B2B.BuildingBlocks.Cqrs;
+using Catalog.Service;
+using Catalog.Service.Services;
 using Customer.Service.DataModels;
 using Customer.Service.Entities;
 using Customer.Service.Persistence;
@@ -32,12 +34,21 @@ public interface ICustomerService
     Task<IReadOnlyList<B2BInvoiceDto>> GetCustomerInvoicesAsync(Guid customerId, CancellationToken ct = default);
     Task<IReadOnlyList<B2BShipmentDto>> GetCustomerDeliveriesAsync(Guid customerId, CancellationToken ct = default);
     Task<IReadOnlyList<CustomerFavoriteProductDto>> GetCustomerFavoriteProductsAsync(Guid customerId, CancellationToken ct = default);
+
+    // Manual Favorite Products & Personal Wishlist
+    Task<CustomerFavoriteProductDto> AddManualFavoriteProductAsync(Guid customerId, Guid productId, CancellationToken ct = default);
+    Task<bool> RemoveManualFavoriteProductAsync(Guid customerId, Guid productId, CancellationToken ct = default);
+    Task<IReadOnlyList<CustomerWishlistItemDto>> GetCustomerWishlistAsync(Guid customerId, CancellationToken ct = default);
+    Task<CustomerWishlistItemDto> AddProductToWishlistAsync(Guid customerId, Guid productId, string? note = null, int priority = 3, CancellationToken ct = default);
+    Task<CustomerWishlistItemDto> UpdateWishlistItemAsync(Guid customerId, Guid productId, string? note, int priority, CancellationToken ct = default);
+    Task<bool> RemoveProductFromWishlistAsync(Guid customerId, Guid productId, CancellationToken ct = default);
 }
 
 public sealed class CustomerCrudService(
     CustomerDbContext dbContext,
     IMapper autoMapper,
-    ISender sender) : ICustomerService
+    ISender sender,
+    ICatalogService catalogService) : ICustomerService
 {
     // =========================================================================
     // 1. CUSTOMER CRUD & BUSINESS RULES
@@ -418,9 +429,285 @@ public sealed class CustomerCrudService(
         Guid customerId,
         CancellationToken ct = default)
     {
-        var customer = await RequireCustomerEntityAsync(customerId, ct);
-        throw new CustomerFavoriteProductsNotImplementedException(customer.Id, customer.Name);
+        await RequireCustomerEntityAsync(customerId, ct);
+
+        // 1. Aggregate frequently ordered SKUs from customer's non-cancelled Purchase Orders
+        var orders = await GetCustomerOrdersAsync(customerId, ct);
+        var orderStatsBySku = orders
+            .Where(o => !string.Equals(o.Status, "Cancelled", StringComparison.OrdinalIgnoreCase))
+            .SelectMany(o => o.Lines.Select(l => new { o.Id, o.CreatedAtUtc, Line = l }))
+            .GroupBy(x => x.Line.Sku, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                g => g.Key.ToUpperInvariant(),
+                g => (
+                    OrderFrequency: g.Select(x => x.Id).Distinct().Count(),
+                    TotalUnitsOrdered: g.Sum(x => x.Line.Quantity),
+                    LastOrderedAtUtc: (DateTime?)g.Max(x => x.CreatedAtUtc),
+                    FallbackName: g.First().Line.ProductName,
+                    FallbackUnitPriceHt: g.First().Line.UnitPriceHt
+                ),
+                StringComparer.OrdinalIgnoreCase);
+
+        // 2. Load customer's manually pinned favorite products
+        var manualFavorites = await dbContext.ManualFavorites
+            .AsNoTracking()
+            .Where(f => f.CustomerId == customerId)
+            .ToListAsync(ct);
+
+        var manualFavBySku = manualFavorites
+            .ToDictionary(f => f.Sku.ToUpperInvariant(), f => f, StringComparer.OrdinalIgnoreCase);
+
+        // 3. Merge union of ordered SKUs & manual favorites and enrich with live Catalog data
+        var allSkus = orderStatsBySku.Keys
+            .Union(manualFavBySku.Keys, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var results = new List<CustomerFavoriteProductDto>(allSkus.Count);
+        foreach (var sku in allSkus)
+        {
+            var hasOrderStats = orderStatsBySku.TryGetValue(sku, out var stats);
+            var isManual = manualFavBySku.TryGetValue(sku, out var manualEntity);
+            var catalogProduct = await catalogService.GetProductBySkuAsync(sku, includeArchived: true, ct);
+
+            results.Add(new CustomerFavoriteProductDto(
+                CustomerId: customerId,
+                ProductId: catalogProduct?.Id ?? manualEntity?.ProductId,
+                Sku: catalogProduct?.Sku ?? sku,
+                ProductName: catalogProduct?.Name ?? (hasOrderStats ? stats.FallbackName : sku),
+                Category: catalogProduct?.Category,
+                UnitPriceHt: catalogProduct?.UnitPriceHt ?? (hasOrderStats ? stats.FallbackUnitPriceHt : 0m),
+                AvailableStock: catalogProduct?.AvailableStock ?? 0,
+                IsOutOfStock: catalogProduct?.IsOutOfStock ?? false,
+                IsArchived: catalogProduct?.IsArchived ?? false,
+                OrderFrequency: hasOrderStats ? stats.OrderFrequency : 0,
+                TotalUnitsOrdered: hasOrderStats ? stats.TotalUnitsOrdered : 0,
+                IsManualFavorite: isManual,
+                LastOrderedAtUtc: hasOrderStats ? stats.LastOrderedAtUtc : null));
+        }
+
+        return results
+            .OrderByDescending(f => f.OrderFrequency)
+            .ThenByDescending(f => f.IsManualFavorite)
+            .ThenByDescending(f => f.TotalUnitsOrdered)
+            .ThenBy(f => f.Sku, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
+
+    // =========================================================================
+    // 3.5 MANUAL FAVORITE PRODUCTS & PERSONAL WISHLIST
+    // =========================================================================
+
+    public async Task<CustomerFavoriteProductDto> AddManualFavoriteProductAsync(
+        Guid customerId,
+        Guid productId,
+        CancellationToken ct = default)
+    {
+        await RequireCustomerEntityAsync(customerId, ct);
+
+        var product = await RequireActiveCatalogProductAsync(productId, ct);
+
+        var exists = await dbContext.ManualFavorites
+            .AnyAsync(f => f.CustomerId == customerId && f.ProductId == productId, ct);
+
+        if (exists)
+        {
+            throw new CustomerDomainException(
+                "DUPLICATE_FAVORITE",
+                $"Product '{product.Sku}' is already in customer {customerId}'s manual favorites.");
+        }
+
+        dbContext.ManualFavorites.Add(new CustomerManualFavoriteEntity
+        {
+            CustomerId = customerId,
+            ProductId = product.Id,
+            Sku = product.Sku,
+            AddedAtUtc = DateTime.UtcNow
+        });
+        await dbContext.SaveChangesAsync(ct);
+
+        var allFavorites = await GetCustomerFavoriteProductsAsync(customerId, ct);
+        return allFavorites.First(f => f.ProductId == product.Id);
+    }
+
+    public async Task<bool> RemoveManualFavoriteProductAsync(
+        Guid customerId,
+        Guid productId,
+        CancellationToken ct = default)
+    {
+        await RequireCustomerEntityAsync(customerId, ct);
+
+        var entity = await dbContext.ManualFavorites
+            .FirstOrDefaultAsync(f => f.CustomerId == customerId && f.ProductId == productId, ct);
+
+        if (entity is null)
+        {
+            throw new CustomerDomainException(
+                "FAVORITE_NOT_FOUND",
+                $"Product {productId} is not in customer {customerId}'s manual favorites.");
+        }
+
+        dbContext.ManualFavorites.Remove(entity);
+        await dbContext.SaveChangesAsync(ct);
+        return true;
+    }
+
+    public async Task<IReadOnlyList<CustomerWishlistItemDto>> GetCustomerWishlistAsync(
+        Guid customerId,
+        CancellationToken ct = default)
+    {
+        await RequireCustomerEntityAsync(customerId, ct);
+
+        var entities = await dbContext.WishlistItems
+            .AsNoTracking()
+            .Where(w => w.CustomerId == customerId)
+            .OrderBy(w => w.Priority)
+            .ThenByDescending(w => w.AddedAtUtc)
+            .ToListAsync(ct);
+
+        var results = new List<CustomerWishlistItemDto>(entities.Count);
+        foreach (var item in entities)
+        {
+            var product = await catalogService.GetProductByIdAsync(item.ProductId, includeArchived: true, ct);
+            results.Add(MapWishlistItemToDto(item, product));
+        }
+
+        return results;
+    }
+
+    public async Task<CustomerWishlistItemDto> AddProductToWishlistAsync(
+        Guid customerId,
+        Guid productId,
+        string? note = null,
+        int priority = 3,
+        CancellationToken ct = default)
+    {
+        await RequireCustomerEntityAsync(customerId, ct);
+        ValidateWishlistPriority(priority);
+
+        var product = await RequireActiveCatalogProductAsync(productId, ct);
+
+        var duplicate = await dbContext.WishlistItems
+            .AnyAsync(w => w.CustomerId == customerId && w.ProductId == productId, ct);
+
+        if (duplicate)
+        {
+            throw new CustomerDomainException(
+                "DUPLICATE_WISHLIST_ITEM",
+                $"Product '{product.Sku}' is already in customer {customerId}'s wishlist.");
+        }
+
+        var entity = new CustomerWishlistItemEntity
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customerId,
+            ProductId = product.Id,
+            Sku = product.Sku,
+            Note = string.IsNullOrWhiteSpace(note) ? null : note.Trim(),
+            Priority = priority,
+            AddedAtUtc = DateTime.UtcNow
+        };
+
+        dbContext.WishlistItems.Add(entity);
+        await dbContext.SaveChangesAsync(ct);
+
+        return MapWishlistItemToDto(entity, product);
+    }
+
+    public async Task<CustomerWishlistItemDto> UpdateWishlistItemAsync(
+        Guid customerId,
+        Guid productId,
+        string? note,
+        int priority,
+        CancellationToken ct = default)
+    {
+        await RequireCustomerEntityAsync(customerId, ct);
+        ValidateWishlistPriority(priority);
+
+        var entity = await dbContext.WishlistItems
+            .FirstOrDefaultAsync(w => w.CustomerId == customerId && w.ProductId == productId, ct);
+
+        if (entity is null)
+        {
+            throw new CustomerDomainException(
+                "WISHLIST_ITEM_NOT_FOUND",
+                $"Product {productId} was not found in customer {customerId}'s wishlist.");
+        }
+
+        entity.Note = string.IsNullOrWhiteSpace(note) ? null : note.Trim();
+        entity.Priority = priority;
+        await dbContext.SaveChangesAsync(ct);
+
+        var product = await catalogService.GetProductByIdAsync(productId, includeArchived: true, ct);
+        return MapWishlistItemToDto(entity, product);
+    }
+
+    public async Task<bool> RemoveProductFromWishlistAsync(
+        Guid customerId,
+        Guid productId,
+        CancellationToken ct = default)
+    {
+        await RequireCustomerEntityAsync(customerId, ct);
+
+        var entity = await dbContext.WishlistItems
+            .FirstOrDefaultAsync(w => w.CustomerId == customerId && w.ProductId == productId, ct);
+
+        if (entity is null)
+        {
+            throw new CustomerDomainException(
+                "WISHLIST_ITEM_NOT_FOUND",
+                $"Product {productId} was not found in customer {customerId}'s wishlist.");
+        }
+
+        dbContext.WishlistItems.Remove(entity);
+        await dbContext.SaveChangesAsync(ct);
+        return true;
+    }
+
+    private async Task<CatalogProductDto> RequireActiveCatalogProductAsync(Guid productId, CancellationToken ct)
+    {
+        var product = await catalogService.GetProductByIdAsync(productId, includeArchived: true, ct);
+        if (product is null)
+        {
+            throw new CustomerDomainException("PRODUCT_NOT_FOUND", $"Catalog product {productId} was not found.");
+        }
+
+        if (product.IsArchived)
+        {
+            throw new CustomerDomainException(
+                "PRODUCT_ARCHIVED",
+                $"Catalog product '{product.Sku}' is archived and cannot be added to favorites or wishlist.");
+        }
+
+        return product;
+    }
+
+    private static void ValidateWishlistPriority(int priority)
+    {
+        if (priority is < 1 or > 5)
+        {
+            throw new CustomerDomainException(
+                "INVALID_WISHLIST_DATA",
+                "Wishlist item priority must be between 1 (highest) and 5 (lowest).");
+        }
+    }
+
+    private static CustomerWishlistItemDto MapWishlistItemToDto(
+        CustomerWishlistItemEntity item,
+        CatalogProductDto? product) =>
+        new(
+            Id: item.Id,
+            CustomerId: item.CustomerId,
+            ProductId: item.ProductId,
+            Sku: product?.Sku ?? item.Sku,
+            ProductName: product?.Name ?? item.Sku,
+            Category: product?.Category ?? string.Empty,
+            UnitPriceHt: product?.UnitPriceHt ?? 0m,
+            AvailableStock: product?.AvailableStock ?? 0,
+            IsOutOfStock: product?.IsOutOfStock ?? false,
+            IsArchived: product?.IsArchived ?? false,
+            Note: item.Note,
+            Priority: item.Priority,
+            AddedAtUtc: item.AddedAtUtc);
 
     // =========================================================================
     // 4. PRIVATE BUSINESS RULE VALIDATORS & HELPERS
