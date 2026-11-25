@@ -1,0 +1,15 @@
+{
+  "name": "b-lightful-hub-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Playwright API and Interface (UI) tests for B-Lightful Hub Development Environment",
+  "scripts": {
+    "test": "playwright test",
+    "test:api": "playwright test tests/api.spec.ts",
+    "test:ui": "playwright test tests/ui.spec.ts",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.52.0"
+  }
+}

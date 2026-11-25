@@ -12,4 +12,10 @@
     <ProjectReference Include="..\..\Services\Invoicing.Service\Invoicing.Service.csproj" />
     <ProjectReference Include="..\..\Services\Delivery.Service\Delivery.Service.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <Content Update="wwwroot\dev-ui\index.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
 </Project>
