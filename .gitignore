@@ -10,3 +10,9 @@ coverage/
 *.db
 *.db-shm
 *.db-wal
+.sonarqube/
+dev-gateway.log
+health.json
+tests/e2e/node_modules/
+tests/e2e/playwright-report/
+tests/e2e/test-results/

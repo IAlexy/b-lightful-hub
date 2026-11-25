@@ -1,0 +1,208 @@
+name: B-Lightful Hub CI/CD (Tests, Sonar & Dev Environment E2E)
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - develop
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ci-cd-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_VERSION: '8.0.x'
+  NODE_VERSION: '22'
+  DEV_PORT: '5055'
+
+jobs:
+  build-and-unit-tests:
+    name: Build, Unit Tests & Sonar Analysis
+    runs-on: ubuntu-latest
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+      SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+      SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET ${{ env.DOTNET_VERSION }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Setup Java (for SonarScanner when SONAR_TOKEN is configured)
+        if: env.SONAR_TOKEN != ''
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Restore NuGet dependencies
+        run: dotnet restore BLightfulHub.sln
+
+      - name: Begin SonarCloud / SonarQube analysis (when SONAR_TOKEN is set)
+        if: env.SONAR_TOKEN != ''
+        run: |
+          dotnet tool install --global dotnet-sonarscanner
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          HOST_URL="${SONAR_HOST_URL:-https://sonarcloud.io}"
+          PROJECT_KEY="${SONAR_PROJECT_KEY:-b-lightful-hub}"
+          ORG_ARG=""
+          if [ -n "$SONAR_ORGANIZATION" ]; then
+            ORG_ARG="/o:$SONAR_ORGANIZATION"
+          fi
+          dotnet sonarscanner begin \
+            /k:"$PROJECT_KEY" \
+            $ORG_ARG \
+            /d:sonar.host.url="$HOST_URL" \
+            /d:sonar.token="$SONAR_TOKEN" \
+            /d:sonar.cs.opencover.reportsPaths="tests/**/coverage.opencover.xml"
+
+      - name: Build solution with strict SonarAnalyzer.CSharp (-warnaserror)
+        run: dotnet build BLightfulHub.sln --configuration Release --no-restore -warnaserror
+
+      - name: Run xUnit tests with OpenCover code coverage
+        run: |
+          dotnet test BLightfulHub.sln \
+            --configuration Release \
+            --no-build \
+            --verbosity normal \
+            --logger "trx;LogFileName=test-results.trx" \
+            --results-directory TestResults \
+            --collect:"XPlat Code Coverage" \
+            -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
+          find TestResults -name "coverage.opencover.xml" -exec cp {} tests/B2B.Tests/coverage.opencover.xml \;
+
+      - name: End SonarCloud / SonarQube analysis (when SONAR_TOKEN is set)
+        if: env.SONAR_TOKEN != ''
+        run: |
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
+
+      - name: Report Sonar analysis status
+        if: env.SONAR_TOKEN == ''
+        run: |
+          echo "SonarAnalyzer.CSharp passed with 0 warnings (-warnaserror) and OpenCover coverage was generated."
+          echo "Note: Add GitHub Secret SONAR_TOKEN (and optional vars SONAR_ORGANIZATION / SONAR_HOST_URL) to also publish results to SonarCloud/SonarQube."
+
+      - name: Upload xUnit test results and coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-test-and-coverage-${{ github.run_id }}
+          path: |
+            TestResults/
+            tests/B2B.Tests/coverage.opencover.xml
+          retention-days: 14
+
+  dev-env-e2e-tests:
+    name: Deploy Dev Environment & Run Playwright API + UI Tests
+    needs: [build-and-unit-tests]
+    runs-on: ubuntu-latest
+    environment:
+      name: development
+      url: http://127.0.0.1:5055/dev-ui
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET ${{ env.DOTNET_VERSION }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: tests/e2e/package-lock.json
+
+      - name: Build Gateway for Development environment
+        run: dotnet build src/Gateway/B2B.GraphQL.Gateway/B2B.GraphQL.Gateway.csproj --configuration Release
+
+      - name: Install Playwright & Chromium browser
+        working-directory: tests/e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Start Development environment with mockup data & run Playwright API + UI tests
+        env:
+          ASPNETCORE_ENVIRONMENT: Development
+          B2B_SEED_MOCK_DATA: 'true'
+          ASPNETCORE_URLS: http://127.0.0.1:${{ env.DEV_PORT }}
+          DEV_BASE_URL: http://127.0.0.1:${{ env.DEV_PORT }}
+        run: |
+          dotnet run \
+            --no-build \
+            --configuration Release \
+            --project src/Gateway/B2B.GraphQL.Gateway/B2B.GraphQL.Gateway.csproj \
+            > dev-gateway.log 2>&1 &
+          SERVER_PID=$!
+
+          cleanup() {
+            echo "Stopping Development environment (PID $SERVER_PID)..."
+            kill "$SERVER_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          echo "Waiting for Development environment at $DEV_BASE_URL/health ..."
+          for i in $(seq 1 45); do
+            if curl -fsS "$DEV_BASE_URL/health" > health.json 2>/dev/null; then
+              echo "Development environment is ready:"
+              cat health.json
+              echo ""
+              break
+            fi
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "Development gateway exited unexpectedly!"
+              cat dev-gateway.log
+              exit 1
+            fi
+            sleep 1
+          done
+
+          curl -fsS "$DEV_BASE_URL/health" | grep -q '"mockDataSeeded":true'
+
+          echo "=== Running Playwright API Tests against Development environment ==="
+          npm --prefix tests/e2e run test:api
+
+          echo "=== Running Playwright Interface (UI) Tests against Development environment ==="
+          npm --prefix tests/e2e run test:ui
+
+      - name: Upload Playwright report and Dev Gateway logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-dev-env-report-${{ github.run_id }}
+          path: |
+            tests/e2e/playwright-report/
+            tests/e2e/test-results/
+            dev-gateway.log
+          retention-days: 14
+
+  pr-quality-gate:
+    name: Mandatory PR Gate (Tests + Sonar + Dev E2E)
+    needs: [build-and-unit-tests, dev-env-e2e-tests]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all mandatory checks passed
+        run: |
+          echo "Build, Unit Tests & Sonar Analysis: ${{ needs.build-and-unit-tests.result }}"
+          echo "Deploy Dev Environment & Run Playwright API + UI Tests: ${{ needs.dev-env-e2e-tests.result }}"
+          if [ "${{ needs.build-and-unit-tests.result }}" != "success" ] || [ "${{ needs.dev-env-e2e-tests.result }}" != "success" ]; then
+            echo "Mandatory PR Gate failed: tests, Sonar analysis, or Dev Environment Playwright API/UI checks did not succeed."
+            exit 1
+          fi
+          echo "Mandatory PR Gate passed!"

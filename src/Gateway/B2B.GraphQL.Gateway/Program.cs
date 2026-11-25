@@ -1,6 +1,7 @@
 using B2B.BuildingBlocks.Cqrs;
 using B2B.BuildingBlocks.Mapping;
 using B2B.BuildingBlocks.Messaging;
+using B2B.GraphQL.Gateway.DevEnvironment;
 using B2B.GraphQL.Gateway.GraphQL;
 using Catalog.Service;
 using Customer.Service;
@@ -35,51 +36,15 @@ builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
+// Seed baseline data + extended Development mockup data so the Dev environment has live stitched data for API & UI tests
+var seedSummary = await app.SeedDevMockDataAsync();
+app.MapHealthEndpoint(seedSummary);
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
-}
-
-// Seed an initial B2B Customer & confirmed Order so the Federated GraphQL & REST endpoints have live stitched data on startup
-using (var scope = app.Services.CreateScope())
-{
-    var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-    var existingCustomers = await sender.SendQueryAsync<GetB2BCustomersQuery, IReadOnlyList<B2BCustomerDto>>(new GetB2BCustomersQuery());
-    if (existingCustomers.Count == 0)
-    {
-        await sender.SendCommandAsync<CreateB2BCustomerCommand, B2BCustomerDto>(
-            new CreateB2BCustomerCommand(
-                Name: "Alpine Cloud Datacenters SAS",
-                SirenSiret: "42889123456001",
-                InvoicingAddress: "Parc Technologique de Grenoble, 38000 France",
-                DeliveryAddress: null,
-                UseInvoicingAddressForDelivery: true,
-                ContactEmail: "procurement@alpine-cloud.fr",
-                PhoneNumber: "+33 4 76 00 11 22",
-                Tags:
-                [
-                    new CustomTagInput("VIP", "Strategic Account", "#7C3AED"),
-                    new CustomTagInput("Datacenter", "Tier-IV", "#10B981")
-                ]));
-    }
-
-    var existing = await sender.SendQueryAsync<GetPurchaseOrdersQuery, IReadOnlyList<PurchaseOrderDto>>(new GetPurchaseOrdersQuery());
-    if (existing.Count == 0)
-    {
-        await sender.SendCommandAsync<CreatePurchaseOrderCommand, PurchaseOrderDto>(
-            new CreatePurchaseOrderCommand(
-                BuyerCompanyName: "Alpine Cloud Datacenters SAS",
-                BuyerVatNumber: "FR42889123456",
-                PaymentTermsDays: 30,
-                ShippingDestination: "Parc Technologique de Grenoble, 38000 France",
-                Items:
-                [
-                    new OrderLineRequest("SRV-RACK-42U", 6),
-                    new OrderLineRequest("SW-FIBER-100G", 4)
-                ],
-                AutoConfirm: true));
-    }
+    app.MapDevEnvironmentUi();
 }
 
 // ==========================================

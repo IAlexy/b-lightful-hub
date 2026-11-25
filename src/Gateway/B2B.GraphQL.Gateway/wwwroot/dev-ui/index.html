@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>B-Lightful Hub — Development Environment Portal</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --surface-alt: #0b1220;
+      --border: #334155;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-strong: #0284c7;
+      --success: #10b981;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand h1 { margin: 0; font-size: 1.25rem; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(16, 185, 129, 0.16);
+      color: #6ee7b7;
+      border: 1px solid rgba(16, 185, 129, 0.4);
+    }
+    .badge.info {
+      background: rgba(56, 189, 248, 0.16);
+      color: #7dd3fc;
+      border-color: rgba(56, 189, 248, 0.4);
+    }
+    .badge.warn {
+      background: rgba(245, 158, 11, 0.18);
+      color: #fcd34d;
+      border-color: rgba(245, 158, 11, 0.45);
+    }
+    .nav-links { display: flex; gap: 10px; align-items: center; }
+    .nav-links a {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 0.875rem;
+      padding: 6px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+    }
+    .nav-links a:hover { background: var(--surface-alt); }
+    main { max-width: 1280px; margin: 0 auto; padding: 24px; }
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 14px;
+      margin-bottom: 24px;
+    }
+    .kpi-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .kpi-label { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    .kpi-value { font-size: 1.5rem; font-weight: 700; margin-top: 6px; }
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 10px;
+      flex-wrap: wrap;
+    }
+    .tab-btn {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 16px;
+      font-size: 0.9rem;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .tab-btn.active {
+      background: var(--accent-strong);
+      color: #fff;
+      border-color: var(--accent);
+    }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px;
+      margin-bottom: 20px;
+    }
+    .card h2 { margin-top: 0; font-size: 1.05rem; }
+    .toolbar { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+    input, select, textarea {
+      background: var(--surface-alt);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 0.9rem;
+    }
+    button.primary {
+      background: var(--accent-strong);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button.primary:hover { background: var(--accent); color: #0f172a; }
+    button.secondary {
+      background: var(--surface-alt);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 10px;
+      align-items: end;
+    }
+    label.field { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--muted); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; }
+    .tag-pill {
+      display: inline-block;
+      font-size: 0.72rem;
+      padding: 2px 8px;
+      border-radius: 999px;
+      margin-right: 4px;
+      color: #fff;
+      font-weight: 600;
+    }
+    .status-msg { margin-top: 10px; font-size: 0.85rem; min-height: 20px; }
+    .status-msg.ok { color: #6ee7b7; }
+    .status-msg.err { color: #fca5a5; }
+    pre {
+      background: var(--surface-alt);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      max-height: 360px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1 data-testid="portal-title">B-Lightful Hub — Dev Portal</h1>
+      <span class="badge" data-testid="env-badge">Env: loading...</span>
+      <span class="badge info" data-testid="seed-badge">Mockup Data: checking...</span>
+    </div>
+    <nav class="nav-links">
+      <a href="/swagger" data-testid="link-swagger">Swagger UI</a>
+      <a href="/graphql/schema" data-testid="link-sdl">GraphQL SDL</a>
+      <a href="/health" data-testid="link-health">Health JSON</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="kpi-grid" data-testid="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-label">Catalog Products</div>
+        <div class="kpi-value" data-testid="kpi-products">-</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Low Stock Alerts</div>
+        <div class="kpi-value" data-testid="kpi-low-stock">-</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Purchase Orders</div>
+        <div class="kpi-value" data-testid="kpi-orders">-</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Order Volume (HT)</div>
+        <div class="kpi-value" data-testid="kpi-volume">-</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Invoices (TTC)</div>
+        <div class="kpi-value" data-testid="kpi-invoices">-</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Active Shipments</div>
+        <div class="kpi-value" data-testid="kpi-shipments">-</div>
+      </div>
+    </section>
+
+    <div class="tabs" role="tablist">
+      <button class="tab-btn active" data-tab="catalog" data-testid="tab-catalog">Catalog</button>
+      <button class="tab-btn" data-tab="customers" data-testid="tab-customers">Customers</button>
+      <button class="tab-btn" data-tab="orders" data-testid="tab-orders">Orders, Invoices &amp; Delivery</button>
+      <button class="tab-btn" data-tab="graphql" data-testid="tab-graphql">Federated GraphQL Explorer</button>
+    </div>
+
+    <!-- CATALOG PANEL -->
+    <section id="panel-catalog" class="panel active" data-testid="panel-catalog">
+      <div class="card">
+        <h2>B2B Product Catalog</h2>
+        <div class="toolbar">
+          <select id="catalog-category-filter" data-testid="catalog-category-filter">
+            <option value="">All Categories</option>
+          </select>
+          <button class="secondary" id="catalog-refresh-btn" data-testid="catalog-refresh-btn">Refresh</button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>SKU</th>
+              <th>Product Name</th>
+              <th>Category</th>
+              <th>Unit Price (HT)</th>
+              <th>Bulk Tier</th>
+              <th>Stock (Avail / Res)</th>
+            </tr>
+          </thead>
+          <tbody id="catalog-tbody" data-testid="catalog-tbody"></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h2>Add Catalog Product</h2>
+        <form id="create-product-form" class="form-grid" data-testid="create-product-form">
+          <label class="field">SKU<input name="sku" required placeholder="e.g. OPTIC-QSFP-400G" data-testid="product-sku-input" /></label>
+          <label class="field">Name<input name="name" required placeholder="Product Name" data-testid="product-name-input" /></label>
+          <label class="field">Category<input name="category" required placeholder="Networking" data-testid="product-category-input" /></label>
+          <label class="field">Unit Price HT<input name="unitPriceHt" type="number" step="0.01" required value="1200" data-testid="product-price-input" /></label>
+          <label class="field">Bulk Min Qty<input name="bulkTierMinQuantity" type="number" required value="5" data-testid="product-bulk-qty-input" /></label>
+          <label class="field">Bulk Price HT<input name="bulkUnitPriceHt" type="number" step="0.01" required value="990" data-testid="product-bulk-price-input" /></label>
+          <label class="field">Initial Stock<input name="initialStock" type="number" required value="20" data-testid="product-stock-input" /></label>
+          <label class="field">Weight (kg)<input name="unitWeightKg" type="number" step="0.1" required value="3.5" data-testid="product-weight-input" /></label>
+          <button type="submit" class="primary" data-testid="create-product-submit">Create Product</button>
+        </form>
+        <div id="product-status" class="status-msg" data-testid="product-status"></div>
+      </div>
+    </section>
+
+    <!-- CUSTOMERS PANEL -->
+    <section id="panel-customers" class="panel" data-testid="panel-customers">
+      <div class="card">
+        <h2>B2B Customers</h2>
+        <div class="toolbar">
+          <input id="customer-search-input" placeholder="Search customer..." data-testid="customer-search-input" />
+          <button class="secondary" id="customer-search-btn" data-testid="customer-search-btn">Search</button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Company</th>
+              <th>SIREN/SIRET</th>
+              <th>Invoicing Address</th>
+              <th>Contact</th>
+              <th>Tags</th>
+            </tr>
+          </thead>
+          <tbody id="customers-tbody" data-testid="customers-tbody"></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h2>Create B2B Customer</h2>
+        <form id="create-customer-form" class="form-grid" data-testid="create-customer-form">
+          <label class="field">Company Name<input name="name" required placeholder="Company SAS" data-testid="customer-name-input" /></label>
+          <label class="field">SIREN / SIRET<input name="sirenSiret" required placeholder="14 digits" data-testid="customer-siren-input" /></label>
+          <label class="field">Invoicing Address<input name="invoicingAddress" required placeholder="10 Rue de Paris, 75001 Paris" data-testid="customer-address-input" /></label>
+          <label class="field">Contact Email<input name="contactEmail" type="email" placeholder="buyer@company.fr" data-testid="customer-email-input" /></label>
+          <label class="field">Phone Number<input name="phoneNumber" placeholder="+33 1 40 00 00 00" data-testid="customer-phone-input" /></label>
+          <button type="submit" class="primary" data-testid="create-customer-submit">Create Customer</button>
+        </form>
+        <div id="customer-status" class="status-msg" data-testid="customer-status"></div>
+      </div>
+    </section>
+
+    <!-- ORDERS / INVOICES / DELIVERIES PANEL -->
+    <section id="panel-orders" class="panel" data-testid="panel-orders">
+      <div class="card">
+        <h2>Create Purchase Order (Auto-Confirmed Saga)</h2>
+        <form id="create-order-form" class="form-grid" data-testid="create-order-form">
+          <label class="field">Buyer Company<input name="buyerCompanyName" required value="Alpine Cloud Datacenters SAS" data-testid="order-company-input" /></label>
+          <label class="field">Buyer VAT<input name="buyerVatNumber" required value="FR42889123456" data-testid="order-vat-input" /></label>
+          <label class="field">Shipping Destination<input name="shippingDestination" required value="Parc Technologique de Grenoble, 38000 France" data-testid="order-dest-input" /></label>
+          <label class="field">SKU<input name="sku" required value="SRV-RACK-42U" data-testid="order-sku-input" /></label>
+          <label class="field">Quantity<input name="quantity" type="number" min="1" required value="2" data-testid="order-qty-input" /></label>
+          <button type="submit" class="primary" data-testid="create-order-submit">Place Order</button>
+        </form>
+        <div id="order-status" class="status-msg" data-testid="order-status"></div>
+      </div>
+
+      <div class="card">
+        <h2>Purchase Orders</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Order #</th>
+              <th>Buyer</th>
+              <th>Status</th>
+              <th>Units</th>
+              <th>Total HT</th>
+            </tr>
+          </thead>
+          <tbody id="orders-tbody" data-testid="orders-tbody"></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h2>Invoices &amp; Shipments</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Invoice #</th>
+              <th>Total TTC</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="invoices-tbody" data-testid="invoices-tbody"></tbody>
+        </table>
+        <br />
+        <table>
+          <thead>
+            <tr>
+              <th>Tracking #</th>
+              <th>Carrier</th>
+              <th>Pallets / Weight</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="shipments-tbody" data-testid="shipments-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- GRAPHQL PANEL -->
+    <section id="panel-graphql" class="panel" data-testid="panel-graphql">
+      <div class="card">
+        <h2>Federated GraphQL Explorer (/graphql)</h2>
+        <div style="display:flex; flex-direction:column; gap:10px;">
+          <textarea id="graphql-query-input" rows="5" data-testid="graphql-query-input">query {
+  dashboard { totalProducts lowStockProducts totalOrders totalOrderVolumeHt totalInvoices totalInvoicedTtc activeShipments }
+  orders { id orderNumber buyerCompanyName status totalAmountHt invoice { invoiceNumber totalTtc } shipment { trackingNumber carrierName status } }
+}</textarea>
+          <div>
+            <button class="primary" id="graphql-run-btn" data-testid="graphql-run-btn">Run GraphQL Query</button>
+          </div>
+          <pre id="graphql-result" data-testid="graphql-result">Click "Run GraphQL Query" to execute against /graphql.</pre>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const fmtEur = (n) => new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(Number(n || 0));
+
+    function escapeHtml(str) {
+      return String(str ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    document.querySelectorAll('.tab-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
+        document.querySelectorAll('.panel').forEach((p) => p.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
+      });
+    });
+
+    async function loadHealth() {
+      const res = await fetch('/health');
+      const data = await res.json();
+      document.querySelector('[data-testid="env-badge"]').textContent = `Env: ${data.environment}`;
+      document.querySelector('[data-testid="seed-badge"]').textContent = data.mockDataSeeded
+        ? `Mockup Data: Ready (${data.summary.products} SKUs, ${data.summary.customers} Customers)`
+        : 'Mockup Data: Minimal';
+    }
+
+    async function loadDashboard() {
+      const res = await fetch('/graphql', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: 'query { dashboard { totalProducts lowStockProducts totalOrders totalOrderVolumeHt totalInvoices totalInvoicedTtc activeShipments } }' })
+      });
+      const json = await res.json();
+      const d = json.data?.dashboard;
+      if (!d) return;
+      document.querySelector('[data-testid="kpi-products"]').textContent = d.totalProducts;
+      document.querySelector('[data-testid="kpi-low-stock"]').textContent = d.lowStockProducts;
+      document.querySelector('[data-testid="kpi-orders"]').textContent = d.totalOrders;
+      document.querySelector('[data-testid="kpi-volume"]').textContent = fmtEur(d.totalOrderVolumeHt);
+      document.querySelector('[data-testid="kpi-invoices"]').textContent = `${d.totalInvoices} (${fmtEur(d.totalInvoicedTtc)})`;
+      document.querySelector('[data-testid="kpi-shipments"]').textContent = d.activeShipments;
+    }
+
+    async function loadCatalog(category = '') {
+      const url = category ? `/api/catalog/products?category=${encodeURIComponent(category)}` : '/api/catalog/products';
+      const res = await fetch(url);
+      const products = await res.json();
+
+      if (!category) {
+        const select = document.getElementById('catalog-category-filter');
+        const current = select.value;
+        const categories = [...new Set(products.map((p) => p.category))].sort();
+        select.innerHTML = '<option value="">All Categories</option>' +
+          categories.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+        select.value = current;
+      }
+
+      document.getElementById('catalog-tbody').innerHTML = products.map((p) => `
+        <tr data-testid="catalog-row-${escapeHtml(p.sku)}">
+          <td><code>${escapeHtml(p.sku)}</code></td>
+          <td>${escapeHtml(p.name)}</td>
+          <td>${escapeHtml(p.category)}</td>
+          <td>${fmtEur(p.unitPriceHt)}</td>
+          <td>${p.bulkTierMinQuantity}+ @ ${fmtEur(p.bulkUnitPriceHt)} (-${p.bulkDiscountPercent}%)</td>
+          <td>${p.availableStock} / ${p.reservedStock} ${p.isLowStock ? '<span class="badge warn">Low</span>' : ''}</td>
+        </tr>`).join('');
+    }
+
+    async function loadCustomers(search = '') {
+      const url = search ? `/api/customers?search=${encodeURIComponent(search)}` : '/api/customers';
+      const res = await fetch(url);
+      const customers = await res.json();
+      document.getElementById('customers-tbody').innerHTML = customers.map((c) => `
+        <tr data-testid="customer-row-${escapeHtml(c.sirenSiret)}">
+          <td><strong>${escapeHtml(c.name)}</strong></td>
+          <td><code>${escapeHtml(c.sirenSiret)}</code></td>
+          <td>${escapeHtml(c.invoicingAddress)}</td>
+          <td>${escapeHtml(c.contactEmail || c.phoneNumber || '-')}</td>
+          <td>${(c.tags || []).map((t) => `<span class="tag-pill" style="background:${escapeHtml(t.color || '#334155')}">${escapeHtml(t.name)}</span>`).join('')}</td>
+        </tr>`).join('');
+    }
+
+    async function loadOrdersAndFulfillment() {
+      const [orders, invoices, shipments] = await Promise.all([
+        fetch('/api/ordering/orders').then((r) => r.json()),
+        fetch('/api/invoicing/invoices').then((r) => r.json()),
+        fetch('/api/delivery/shipments').then((r) => r.json())
+      ]);
+
+      document.getElementById('orders-tbody').innerHTML = orders.map((o) => `
+        <tr data-testid="order-row-${escapeHtml(o.orderNumber)}">
+          <td><code>${escapeHtml(o.orderNumber)}</code></td>
+          <td>${escapeHtml(o.buyerCompanyName)}</td>
+          <td><span class="badge info">${escapeHtml(o.status)}</span></td>
+          <td>${o.totalUnits}</td>
+          <td>${fmtEur(o.totalAmountHt)}</td>
+        </tr>`).join('');
+
+      document.getElementById('invoices-tbody').innerHTML = invoices.map((i) => `
+        <tr data-testid="invoice-row-${escapeHtml(i.invoiceNumber)}">
+          <td><code>${escapeHtml(i.invoiceNumber)}</code></td>
+          <td>${fmtEur(i.totalTtc)}</td>
+          <td>${escapeHtml(i.status)}</td>
+          <td>${i.status !== 'Paid' ? `<button class="secondary" onclick="markPaid('${escapeHtml(i.id)}')">Mark Paid</button>` : 'Settled'}</td>
+        </tr>`).join('');
+
+      document.getElementById('shipments-tbody').innerHTML = shipments.map((s) => `
+        <tr data-testid="shipment-row-${escapeHtml(s.trackingNumber)}">
+          <td><code>${escapeHtml(s.trackingNumber)}</code></td>
+          <td>${escapeHtml(s.carrierName)}</td>
+          <td>${s.palletCount} pallet(s) / ${s.totalWeightKg} kg</td>
+          <td>${escapeHtml(s.status)}</td>
+          <td>${s.status !== 'Delivered' ? `<button class="secondary" onclick="advanceShipment('${escapeHtml(s.id)}')">Advance</button>` : 'Completed'}</td>
+        </tr>`).join('');
+    }
+
+    window.markPaid = async (id) => {
+      await fetch(`/api/invoicing/invoices/${id}/pay`, { method: 'PATCH' });
+      await Promise.all([loadDashboard(), loadOrdersAndFulfillment()]);
+    };
+
+    window.advanceShipment = async (id) => {
+      await fetch(`/api/delivery/shipments/${id}/advance`, { method: 'PATCH' });
+      await Promise.all([loadDashboard(), loadOrdersAndFulfillment()]);
+    };
+
+    document.getElementById('catalog-category-filter').addEventListener('change', (e) => loadCatalog(e.target.value));
+    document.getElementById('catalog-refresh-btn').addEventListener('click', () => loadCatalog(document.getElementById('catalog-category-filter').value));
+    document.getElementById('customer-search-btn').addEventListener('click', () => loadCustomers(document.getElementById('customer-search-input').value));
+
+    document.getElementById('create-product-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const status = document.getElementById('product-status');
+      const res = await fetch('/api/catalog/products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sku: fd.get('sku'),
+          name: fd.get('name'),
+          category: fd.get('category'),
+          unitPriceHt: Number(fd.get('unitPriceHt')),
+          bulkTierMinQuantity: Number(fd.get('bulkTierMinQuantity')),
+          bulkUnitPriceHt: Number(fd.get('bulkUnitPriceHt')),
+          initialStock: Number(fd.get('initialStock')),
+          unitWeightKg: Number(fd.get('unitWeightKg'))
+        })
+      });
+      if (res.ok) {
+        const created = await res.json();
+        status.className = 'status-msg ok';
+        status.textContent = `Product ${created.sku} created.`;
+        e.target.reset();
+        await Promise.all([loadCatalog(), loadDashboard()]);
+      } else {
+        status.className = 'status-msg err';
+        status.textContent = `Failed to create product (${res.status}).`;
+      }
+    });
+
+    document.getElementById('create-customer-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const status = document.getElementById('customer-status');
+      const res = await fetch('/api/customers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: fd.get('name'),
+          sirenSiret: fd.get('sirenSiret'),
+          invoicingAddress: fd.get('invoicingAddress'),
+          deliveryAddress: null,
+          useInvoicingAddressForDelivery: true,
+          contactEmail: fd.get('contactEmail') || null,
+          phoneNumber: fd.get('phoneNumber') || null
+        })
+      });
+      if (res.ok) {
+        const created = await res.json();
+        status.className = 'status-msg ok';
+        status.textContent = `Customer ${created.name} created.`;
+        e.target.reset();
+        await loadCustomers();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        status.className = 'status-msg err';
+        status.textContent = err.message || `Failed to create customer (${res.status}).`;
+      }
+    });
+
+    document.getElementById('create-order-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const status = document.getElementById('order-status');
+      const res = await fetch('/api/ordering/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          buyerCompanyName: fd.get('buyerCompanyName'),
+          buyerVatNumber: fd.get('buyerVatNumber'),
+          paymentTermsDays: 30,
+          shippingDestination: fd.get('shippingDestination'),
+          items: [{ sku: fd.get('sku'), quantity: Number(fd.get('quantity')) }],
+          autoConfirm: true
+        })
+      });
+      if (res.ok) {
+        const created = await res.json();
+        status.className = 'status-msg ok';
+        status.textContent = `Order ${created.orderNumber} confirmed.`;
+        await Promise.all([loadOrdersAndFulfillment(), loadDashboard(), loadCatalog()]);
+      } else {
+        status.className = 'status-msg err';
+        status.textContent = `Failed to place order (${res.status}).`;
+      }
+    });
+
+    document.getElementById('graphql-run-btn').addEventListener('click', async () => {
+      const query = document.getElementById('graphql-query-input').value;
+      const res = await fetch('/graphql', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query })
+      });
+      const json = await res.json();
+      document.getElementById('graphql-result').textContent = JSON.stringify(json, null, 2);
+    });
+
+    Promise.all([loadHealth(), loadDashboard(), loadCatalog(), loadCustomers(), loadOrdersAndFulfillment()]);
+  </script>
+</body>
+</html>
